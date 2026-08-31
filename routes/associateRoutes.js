@@ -9,6 +9,7 @@ const {
   updateStatus,
   deleteAssociate
 } = require('../controllers/associateController');
+const { verifyAdminToken } = require('../middlewares/authMiddleware');
 
 const cpUpload = upload.fields([
   { name: 'profileImage', maxCount: 1 },
@@ -16,11 +17,11 @@ const cpUpload = upload.fields([
 ]);
 
 // Routes
-router.post('/register', cpUpload, registerAssociate);
-router.get('/', getAllAssociates);
-router.get('/:id', getAssociateById);
-router.put('/:id', cpUpload, updateAssociate);
-router.patch('/:id/status', updateStatus);
-router.delete('/:id', deleteAssociate);
+router.post('/register', verifyAdminToken, cpUpload, registerAssociate);
+router.get('/', verifyAdminToken, getAllAssociates);
+router.get('/:id', verifyAdminToken, getAssociateById);
+router.put('/:id', verifyAdminToken, cpUpload, updateAssociate);
+router.patch('/:id/status', verifyAdminToken, updateStatus);
+router.delete('/:id', verifyAdminToken, deleteAssociate);
 
 module.exports = router;
