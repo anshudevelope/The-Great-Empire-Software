@@ -28,9 +28,11 @@ connectDB();
 
 // Routes Import
 const associateRoutes = require('./routes/associateRoutes');
+const authRoutes = require('./routes/authRoutes');
 
 // API Endpoint Mounting
 app.use('/api/associates', associateRoutes);
+app.use('/api/auth', authRoutes);
 
 // Health Check Route
 app.get('/', (req, res) => {
