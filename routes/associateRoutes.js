@@ -5,6 +5,7 @@ const {
   registerAssociate,
   getAllAssociates,
   getAssociateById,
+  getBinaryTree,
   updateAssociate,
   updateStatus,
   deleteAssociate
@@ -19,6 +20,7 @@ const cpUpload = upload.fields([
 // Routes
 router.post('/register', verifyAdminToken, cpUpload, registerAssociate);
 router.get('/', verifyAdminToken, getAllAssociates);
+router.get('/tree/:id', verifyAdminToken, getBinaryTree); // Fetch visual binary tree JSON
 router.get('/:id', verifyAdminToken, getAssociateById);
 router.put('/:id', verifyAdminToken, cpUpload, updateAssociate);
 router.patch('/:id/status', verifyAdminToken, updateStatus);

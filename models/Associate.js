@@ -24,15 +24,23 @@ const associateSchema = new mongoose.Schema(
         nomineeRelation: { type: String, default: '' },
         nomineeAge: { type: Number },
 
-        // System & Binary Structure
+        // System Details
         role: { type: String, enum: ['associate', 'admin'], default: 'associate' },
         status: {
             type: String,
             enum: ['pending', 'approved', 'rejected'],
             default: 'pending'
         },
-        sponsorId: { type: mongoose.Schema.Types.ObjectId, ref: 'Associate', default: null },
         tier: { type: String, enum: ['Tier I', 'Tier II'], default: 'Tier I' },
+
+        // Scalable Binary Tree Architecture
+        sponsorId: { type: mongoose.Schema.Types.ObjectId, ref: 'Associate', default: null }, // Direct Referral Sponsor
+        parentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Associate', default: null },   // Direct Node Parent in Tree
+        position: { type: String, enum: ['Left', 'Right', null], default: null },              // Branch placement under Parent
+
+        // Direct Children References (Guarantees binary limit of max 2 direct children)
+        leftChild: { type: mongoose.Schema.Types.ObjectId, ref: 'Associate', default: null },
+        rightChild: { type: mongoose.Schema.Types.ObjectId, ref: 'Associate', default: null },
 
         // Media Uploads
         profileImage: {
