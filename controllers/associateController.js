@@ -13,6 +13,42 @@ const findExtremeNode = async (startParentId, position) => {
   return startParentId;
 };
 
+// Resolve the actual parent an associate should attach under for a given
+// position, walking down that leg via spillover if the requested slot is
+// already taken by a different associate. `selfId` (only set when re-placing
+// an existing associate) stops it from spilling over away from a slot it
+// already occupies.
+const resolveTreeTarget = async (requestedParentId, requestedPosition, selfId = null) => {
+  if (!['Left', 'Right'].includes(requestedPosition)) {
+    const err = new Error('Position must be either "Left" or "Right".');
+    err.status = 400;
+    throw err;
+  }
+
+  const parentNode = await Associate.findById(requestedParentId);
+  if (!parentNode) {
+    const err = new Error('Specified Parent node not found.');
+    err.status = 404;
+    throw err;
+  }
+
+  const existingChild = requestedPosition === 'Left' ? parentNode.leftChild : parentNode.rightChild;
+  const slotIsSelf = existingChild && selfId && String(existingChild) === String(selfId);
+
+  if (existingChild && !slotIsSelf) {
+    return findExtremeNode(requestedParentId, requestedPosition);
+  }
+  return requestedParentId;
+};
+
+// Clear a parent's child pointer, but only if it still actually points at
+// childId — guards against clobbering a slot that's since been reassigned.
+const detachFromParent = async (parentId, position, childId) => {
+  if (!parentId || !position || !childId) return;
+  const field = position === 'Left' ? 'leftChild' : 'rightChild';
+  await Associate.findOneAndUpdate({ _id: parentId, [field]: childId }, { [field]: null });
+};
+
 // 1. REGISTER ASSOCIATE WITH BINARY PLACEMENT
 exports.registerAssociate = async (req, res) => {
   try {
@@ -30,22 +66,11 @@ exports.registerAssociate = async (req, res) => {
     let targetParentId = parentId || sponsorId || null;
     let targetPosition = position || null;
 
-    // Validate Placement Logic
     if (targetParentId && targetPosition) {
-      if (!['Left', 'Right'].includes(targetPosition)) {
-        return res.status(400).json({ success: false, message: 'Position must be either "Left" or "Right".' });
-      }
-
-      let parentNode = await Associate.findById(targetParentId);
-      if (!parentNode) {
-        return res.status(404).json({ success: false, message: 'Specified Parent node not found.' });
-      }
-
-      const existingChild = targetPosition === 'Left' ? parentNode.leftChild : parentNode.rightChild;
-
-      // Automatic Spillover: If chosen spot is occupied, automatically route down that leg to the extreme bottom
-      if (existingChild) {
-        targetParentId = await findExtremeNode(targetParentId, targetPosition);
+      try {
+        targetParentId = await resolveTreeTarget(targetParentId, targetPosition);
+      } catch (err) {
+        return res.status(err.status || 500).json({ success: false, message: err.message });
       }
     }
 
@@ -182,6 +207,40 @@ exports.updateAssociate = async (req, res) => {
 
     const associate = await Associate.findById(req.params.id);
     if (!associate) return res.status(404).json({ success: false, message: 'Associate not found' });
+
+    // Binary tree (re-)placement — only when the client explicitly supplies a
+    // parent/sponsor AND a position together. Editing unrelated fields (or
+    // sponsorId alone, without a position) must never move this associate
+    // around the tree.
+    const requestedParentId = updateFields.parentId || updateFields.sponsorId || null;
+    const requestedPosition = updateFields.position || null;
+
+    if (requestedParentId && requestedPosition) {
+      if (String(requestedParentId) === String(associate._id)) {
+        return res.status(400).json({ success: false, message: 'An associate cannot be placed under themselves.' });
+      }
+
+      let targetParentId;
+      try {
+        targetParentId = await resolveTreeTarget(requestedParentId, requestedPosition, associate._id);
+      } catch (err) {
+        return res.status(err.status || 500).json({ success: false, message: err.message });
+      }
+
+      const unchanged =
+        associate.parentId &&
+        String(associate.parentId) === String(targetParentId) &&
+        associate.position === requestedPosition;
+
+      if (!unchanged) {
+        await detachFromParent(associate.parentId, associate.position, associate._id);
+        const attachField = requestedPosition === 'Left' ? { leftChild: associate._id } : { rightChild: associate._id };
+        await Associate.findByIdAndUpdate(targetParentId, attachField);
+      }
+
+      updateFields.parentId = targetParentId;
+      updateFields.position = requestedPosition;
+    }
 
     if (updateFields.password && updateFields.password.trim() !== '') {
       const salt = await bcrypt.genSalt(10);
