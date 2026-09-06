@@ -1,0 +1,34 @@
+{
+  "name": "The Great Empire",
+  "legalName": "",
+  "tagline": "Vision to Reality",
+
+  "address": "",
+  "city": "",
+  "state": "Uttar Pradesh",
+  "pinCode": "",
+  "country": "India",
+
+  "phone": "",
+  "altPhone": "",
+  "email": "",
+  "website": "",
+
+  "gstin": "",
+  "pan": "",
+  "cin": "",
+  "rera": "",
+
+  "bank": {
+    "name": "",
+    "accountName": "",
+    "accountNumber": "",
+    "ifsc": "",
+    "branch": ""
+  },
+
+  "invoice": {
+    "footerNote": "This is a computer-generated receipt for payment received. No signature is required unless stated above.",
+    "terms": ""
+  }
+}

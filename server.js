@@ -41,6 +41,8 @@ const authRoutes = require('./routes/authRoutes');
 const referralRoutes = require('./routes/referralRoutes');
 const treeRoutes = require('./routes/treeRoutes');
 const reportRoutes = require('./routes/reportRoutes');
+const invoiceRoutes = require('./routes/invoiceRoutes');
+const companyRoutes = require('./routes/companyRoutes');
 
 // API Endpoint Mounting
 app.use('/api/associates', associateRoutes);
@@ -48,6 +50,8 @@ app.use('/api/auth', authRoutes);
 app.use('/api/referrals', referralRoutes);
 app.use('/api/tree', treeRoutes);
 app.use('/api/reports', reportRoutes);
+app.use('/api/invoices', invoiceRoutes);
+app.use('/api/company', companyRoutes);
 
 // Health Check Route
 app.get('/', (req, res) => {
