@@ -7,7 +7,10 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "dev": "nodemon server.js",
     "build": "echo 'No build step required for backend'",
-    "start": "node server.js"
+    "start": "node server.js",
+    "seed:admin": "node scripts/seedAdmin.js",
+    "migrate": "node scripts/migrate.js",
+    "verify:tree": "node scripts/verifyTree.js"
   },
   "keywords": [],
   "author": "",
