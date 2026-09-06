@@ -364,6 +364,16 @@ exports.searchAssociates = async (req, res, next) => {
       filter.role = req.query.role;
     }
 
+    // A sponsor picker only wants approved members.
+    if (req.query.status && Object.values(STATUSES).includes(req.query.status)) {
+      filter.status = req.query.status;
+    }
+
+    // Keeps an associate out of their own sponsor list.
+    if (req.query.exclude) {
+      filter._id = { $ne: req.query.exclude };
+    }
+
     if (q) {
       // Escape regex metacharacters — raw user input in a $regex would
       // otherwise let a query like "(((" throw, or a pathological pattern
