@@ -131,6 +131,13 @@ exports.createReferral = async (req, res, next) => {
         return res.status(400).json({ success: false, message: 'receivedOn is not a valid date.' });
       }
     }
+    // `receivedOn` is a DATE, not a timestamp — the form only ever collects a
+    // day. Left un-normalised, a value defaulted to `new Date()` carries a time
+    // and sorts above one entered on the form for the same day (stored at
+    // midnight), so the invoice register ends up in an order that looks random.
+    // Flattening to midnight makes same-day entries tie, letting createdAt
+    // order them newest-first.
+    receivedOnDate.setUTCHours(0, 0, 0, 0);
 
     // Resolved to a snapshot so the receipt keeps its wording even if this
     // person is later renamed or removed.

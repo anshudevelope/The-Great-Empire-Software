@@ -113,7 +113,7 @@ exports.listInvoices = async (req, res, next) => {
     }
 
     if (req.query.format === 'csv') {
-      const cursor = Referral.find(filter).sort({ receivedOn: -1 }).lean().cursor();
+      const cursor = Referral.find(filter).sort({ receivedOn: -1, createdAt: -1 }).lean().cursor();
       return streamCsv(
         res,
         `invoices-${new Date().toISOString().slice(0, 10)}.csv`,
@@ -142,7 +142,7 @@ exports.listInvoices = async (req, res, next) => {
       Referral.find(filter)
         .populate('issuedTo', 'memberCode fullName email phone address city state pinCode')
         .populate('member', 'memberCode fullName')
-        .sort({ receivedOn: -1 })
+        .sort({ receivedOn: -1, createdAt: -1 })
         .skip((page - 1) * limit)
         .limit(limit),
       Referral.countDocuments(filter),
