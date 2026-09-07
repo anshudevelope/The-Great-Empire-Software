@@ -10,7 +10,9 @@
     "start": "node server.js",
     "seed:admin": "node scripts/seedAdmin.js",
     "migrate": "node scripts/migrate.js",
-    "verify:tree": "node scripts/verifyTree.js"
+    "verify:tree": "node scripts/verifyTree.js",
+    "sync:indexes": "node scripts/syncIndexes.js",
+    "recode": "node scripts/recodeMembers.js"
   },
   "keywords": [],
   "author": "",

@@ -128,7 +128,16 @@ referralSchema.index({ createdAt: -1 });
 // a mistake can be cancelled and re-raised.
 referralSchema.index(
   { member: 1 },
-  { unique: true, partialFilterExpression: { status: { $in: ['unused', 'used'] } } }
+  {
+    unique: true,
+    partialFilterExpression: {
+      // `member` must exist: pre-existing referrals from the old flow (where
+      // the referral CREATED the member) have no member field, and several
+      // nulls would collide with each other on a unique index.
+      member: { $type: 'objectId' },
+      status: { $in: ['unused', 'used'] }
+    }
+  }
 );
 
 referralSchema.virtual('isLocked').get(function () {
