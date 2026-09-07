@@ -13,15 +13,15 @@ require('dotenv').config();
 const mongoose = require('mongoose');
 const Associate = require('../models/Associate');
 const Counter = require('../models/Counter');
-const { formatMemberCode } = require('../utils/codes');
-const { ROLES, TIERS, MEMBER_CODE } = require('../config/constants');
+const { formatMemberCode, formatSponsorCode } = require('../utils/codes');
+const { ROLES, TIERS, MEMBER_CODE, SPONSOR_CODE } = require('../config/constants');
 
 const run = async () => {
   await mongoose.connect(process.env.MONGO_URI);
   console.log('Connected to MongoDB\n');
 
   const associates = await Associate.find({ role: ROLES.ASSOCIATE })
-    .select('memberCode parentId position sponsorId sponsorCode ancestors depth tier createdAt')
+    .select('memberCode sponsorCode sponsorMemberCode treeStatus parentId position sponsorId ancestors depth tier createdAt')
     .sort({ createdAt: 1 })
     .lean();
 
@@ -75,6 +75,43 @@ const run = async () => {
   );
   await Counter.raiseTo(MEMBER_CODE.SEQUENCE, highest);
   console.log(`counter:    raised to ${highest} (next is ${formatMemberCode(highest + 1)})`);
+
+  // -------------------------------------------------------------------------
+  // 1b. Sponsor IDs (SPN####) — every associate gets their own, in join order.
+  // -------------------------------------------------------------------------
+  const usedSponsor = new Set(
+    associates.map((a) => a.sponsorCode).filter((c) => c && /^SPN\d+$/.test(c))
+  );
+  let sponsorSeq = 0;
+  const sponsorCodeById = new Map();
+
+  for (const a of associates) {
+    if (a.sponsorCode && /^SPN\d+$/.test(a.sponsorCode)) {
+      sponsorCodeById.set(String(a._id), a.sponsorCode);
+      const m = /^SPN(\d+)$/.exec(a.sponsorCode);
+      if (m) sponsorSeq = Math.max(sponsorSeq, parseInt(m[1], 10));
+      continue;
+    }
+    let code;
+    do {
+      sponsorSeq += 1;
+      code = formatSponsorCode(sponsorSeq);
+    } while (usedSponsor.has(code));
+    usedSponsor.add(code);
+    sponsorCodeById.set(String(a._id), code);
+  }
+
+  const highestSponsor = Math.max(
+    0,
+    ...[...usedSponsor].map((c) => {
+      const m = /^SPN(\d+)$/.exec(c);
+      return m ? parseInt(m[1], 10) : 0;
+    })
+  );
+  await Counter.raiseTo(SPONSOR_CODE.SEQUENCE, highestSponsor);
+  console.log(`sponsorIds: assigned ${sponsorCodeById.size} (next is ${formatSponsorCode(highestSponsor + 1)})`);
+
+  const sponsorCodeFor = (id) => sponsorCodeById.get(id) || null;
 
   // -------------------------------------------------------------------------
   // 2. Materialised path — breadth-first from each root.
@@ -152,8 +189,25 @@ const run = async () => {
   for (const a of associates) {
     const set = {};
 
-    const expectedSponsorCode = a.sponsorId ? codeById.get(String(a.sponsorId)) || null : null;
-    if ((a.sponsorCode || null) !== expectedSponsorCode) set.sponsorCode = expectedSponsorCode;
+    // `sponsorCode` changed meaning: it used to hold the SPONSOR's member code,
+    // it now holds this member's OWN Sponsor ID (SPN####). The old value moves
+    // to sponsorMemberCode.
+    const expectedSponsorMemberCode = a.sponsorId ? codeById.get(String(a.sponsorId)) || null : null;
+    if ((a.sponsorMemberCode || null) !== expectedSponsorMemberCode) {
+      set.sponsorMemberCode = expectedSponsorMemberCode;
+    }
+
+    // Everyone gets their own Sponsor ID. Only mint one where it is missing or
+    // still holds a legacy TRG value.
+    if (!a.sponsorCode || !/^SPN\d+$/.test(a.sponsorCode)) {
+      set.sponsorCode = sponsorCodeFor(String(a._id));
+    }
+
+    // Existing members are all in the tree already: the one without a parent is
+    // the root, everyone else is placed.
+    if (!a.treeStatus || a.treeStatus === 'unplaced') {
+      set.treeStatus = a.parentId ? 'placed' : 'root';
+    }
 
     const expectedDirects = directCounts.get(String(a._id)) || 0;
     set.directCount = expectedDirects;

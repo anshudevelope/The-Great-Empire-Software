@@ -26,6 +26,28 @@ const MEMBER_CODE = {
   PAD: 4 // TRG0001 … TRG9999, then widens naturally to TRG10000
 };
 
+// Every associate also gets their own Sponsor ID — the code they hand out when
+// they refer someone. Separate from the member code so "search by sponsor ID"
+// can never be ambiguous with "search by associate ID".
+const SPONSOR_CODE = {
+  SEQUENCE: 'sponsorCode',
+  PREFIX: 'SPN',
+  PAD: 4 // SPN0001
+};
+
+// ---------------------------------------------------------------------------
+// Tree placement
+// ---------------------------------------------------------------------------
+// Placement is optional at creation: an associate exists as a record long
+// before they occupy a node. Without an explicit marker, "unplaced" and "root"
+// are indistinguishable — both have parentId null — so the single-root rule
+// would have nothing to check.
+const TREE_STATUSES = {
+  UNPLACED: 'unplaced', // created, listed, but not in the tree yet
+  ROOT: 'root',         // the one and only tree root
+  PLACED: 'placed'      // sits under a parent
+};
+
 // ---------------------------------------------------------------------------
 // Referral vouchers
 // ---------------------------------------------------------------------------
@@ -115,6 +137,8 @@ module.exports = {
   TIER_LABELS,
   POSITIONS,
   MEMBER_CODE,
+  SPONSOR_CODE,
+  TREE_STATUSES,
   REFERRAL_STATUSES,
   REFERRAL,
   INVOICE,

@@ -1,5 +1,5 @@
 const mongoose = require('mongoose');
-const { ROLES, STATUSES, TIERS, POSITIONS } = require('../config/constants');
+const { ROLES, STATUSES, TIERS, POSITIONS, TREE_STATUSES } = require('../config/constants');
 
 const associateSchema = new mongoose.Schema(
     {
@@ -65,6 +65,17 @@ const associateSchema = new mongoose.Schema(
         // ------------------------------------------------------------------
         // Binary tree (placement) — decides where business volume flows
         // ------------------------------------------------------------------
+        // Placement is OPTIONAL at creation. An associate is a real record from
+        // the moment they are created; occupying a tree node happens later,
+        // either when the admin places them or when their sponsor redeems a
+        // referral. Unplaced members appear in listings but not in the tree.
+        treeStatus: {
+            type: String,
+            enum: Object.values(TREE_STATUSES),
+            default: TREE_STATUSES.UNPLACED,
+            index: true
+        },
+
         parentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Associate', default: null },
         position: { type: String, enum: [...Object.values(POSITIONS), null], default: null },
 
@@ -85,9 +96,17 @@ const associateSchema = new mongoose.Schema(
         // ------------------------------------------------------------------
         // Sponsor tree (referral) — decides who gets referral credit
         // ------------------------------------------------------------------
-        // Differs from parentId whenever spillover moved the member down a leg.
+        // This associate's OWN Sponsor ID (SPN0001) — the code they give out
+        // when referring someone. A second identity for the same person, kept
+        // separate from memberCode so a sponsor lookup is never ambiguous.
+        sponsorCode: { type: String, uppercase: true, trim: true },
+
+        // Who referred THIS associate. Differs from parentId whenever spillover
+        // moved them down a leg.
         sponsorId: { type: mongoose.Schema.Types.ObjectId, ref: 'Associate', default: null },
-        sponsorCode: { type: String, default: null },  // denormalised for fast reports
+        // Denormalised codes of that sponsor, for fast reports and display.
+        sponsorMemberCode: { type: String, default: null }, // their TRG####
+        sponsorSponsorCode: { type: String, default: null }, // their SPN####
         directCount: { type: Number, default: 0 },
 
         // Media Uploads
@@ -119,10 +138,16 @@ associateSchema.index(
     { unique: true, partialFilterExpression: { memberCode: { $type: 'string' } } }
 );
 
+// Same partial-unique treatment for the Sponsor ID — admins have neither code.
+associateSchema.index(
+    { sponsorCode: 1 },
+    { unique: true, partialFilterExpression: { sponsorCode: { $type: 'string' } } }
+);
+
 associateSchema.index({ ancestors: 1 });   // downline reports + ownership checks
 associateSchema.index({ sponsorId: 1 });   // "My Directs" / referral reports
 associateSchema.index({ parentId: 1 });
-associateSchema.index({ sponsorCode: 1 });
+associateSchema.index({ sponsorMemberCode: 1 });
 associateSchema.index({ status: 1 });
 associateSchema.index({ role: 1 });
 associateSchema.index({ depth: 1 });
@@ -144,7 +169,11 @@ associateSchema.set('toObject', { transform: stripSensitive });
 
 // Convenience virtuals
 associateSchema.virtual('isRoot').get(function () {
-    return this.role === ROLES.ASSOCIATE && this.parentId === null;
+    return this.treeStatus === TREE_STATUSES.ROOT;
+});
+
+associateSchema.virtual('isInTree').get(function () {
+    return this.treeStatus !== TREE_STATUSES.UNPLACED;
 });
 
 module.exports = mongoose.model('Associate', associateSchema);

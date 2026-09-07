@@ -1,6 +1,6 @@
 const crypto = require('crypto');
 const Counter = require('../models/Counter');
-const { MEMBER_CODE, REFERRAL, INVOICE } = require('../config/constants');
+const { MEMBER_CODE, SPONSOR_CODE, REFERRAL, INVOICE } = require('../config/constants');
 
 // TRG0001, TRG0042 … widens past TRG9999 on its own.
 const formatMemberCode = (seq) =>
@@ -11,6 +11,15 @@ const formatMemberCode = (seq) =>
 const nextMemberCode = async (session = null) => {
   const seq = await Counter.next(MEMBER_CODE.SEQUENCE, session);
   return formatMemberCode(seq);
+};
+
+// SPN0001 — the associate's own Sponsor ID, minted alongside the member code.
+const formatSponsorCode = (seq) =>
+  `${SPONSOR_CODE.PREFIX}${String(seq).padStart(SPONSOR_CODE.PAD, '0')}`;
+
+const nextSponsorCode = async (session = null) => {
+  const seq = await Counter.next(SPONSOR_CODE.SEQUENCE, session);
+  return formatSponsorCode(seq);
 };
 
 // REF-000123
@@ -41,6 +50,8 @@ const generatePin = (length = REFERRAL.PIN_LENGTH) => {
 module.exports = {
   formatMemberCode,
   nextMemberCode,
+  formatSponsorCode,
+  nextSponsorCode,
   formatReferralNo,
   nextReferralNo,
   nextInvoiceNo,

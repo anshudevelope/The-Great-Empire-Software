@@ -23,7 +23,7 @@ const run = async () => {
   console.log('Connected to MongoDB\n');
 
   const all = await Associate.find({ role: ROLES.ASSOCIATE })
-    .select('memberCode fullName parentId position leftChild rightChild ancestors depth sponsorId sponsorCode directCount')
+    .select('memberCode sponsorCode sponsorMemberCode treeStatus fullName parentId position leftChild rightChild ancestors depth sponsorId directCount')
     .lean();
 
   if (!all.length) {
@@ -37,11 +37,30 @@ const run = async () => {
 
   console.log(`Checking ${all.length} associates…\n`);
 
+  // Members created but not yet placed. They legitimately have no parent, so
+  // every structural check below has to skip them — otherwise each one looks
+  // like a second root and an unreachable orphan.
+  const unplaced = all.filter((a) => a.treeStatus === 'unplaced');
+  const inTree = all.filter((a) => a.treeStatus !== 'unplaced');
+
   // --- 1. Exactly one root --------------------------------------------------
-  const roots = all.filter((a) => !a.parentId);
-  if (roots.length === 0) report('root', 'No root found — every associate has a parent.');
+  const roots = inTree.filter((a) => a.treeStatus === 'root');
+  if (roots.length === 0) report('root', 'No root found — no associate is marked treeStatus "root".');
   if (roots.length > 1) {
     report('root', `${roots.length} roots found (expected 1): ${roots.map((r) => r.memberCode).join(', ')}. Detached trees make downline reports under-count.`);
+  }
+
+  // --- 1b. Placement flags agree with the pointers -------------------------
+  for (const a of all) {
+    if (a.treeStatus === 'unplaced' && (a.parentId || a.leftChild || a.rightChild || (a.ancestors || []).length)) {
+      report('treeStatus', `${a.memberCode} is marked unplaced but has tree links.`);
+    }
+    if (a.treeStatus === 'placed' && !a.parentId) {
+      report('treeStatus', `${a.memberCode} is marked placed but has no parent.`);
+    }
+    if (a.treeStatus === 'root' && a.parentId) {
+      report('treeStatus', `${a.memberCode} is marked root but has a parent.`);
+    }
   }
 
   // --- 2. Member codes ------------------------------------------------------
@@ -112,7 +131,7 @@ const run = async () => {
       }
     }
   }
-  for (const a of all) {
+  for (const a of inTree) {
     if (!reachable.has(String(a._id))) {
       report('unreachable', `${a.memberCode} is not reachable from the root.`);
     }
@@ -147,8 +166,8 @@ const run = async () => {
       report('sponsor', `${a.memberCode} has sponsorId ${a.sponsorId}, which does not exist.`);
       continue;
     }
-    if ((a.sponsorCode || null) !== (sponsor.memberCode || null)) {
-      report('sponsor', `${a.memberCode}: sponsorCode is "${a.sponsorCode}" but the sponsor is ${sponsor.memberCode}.`);
+    if ((a.sponsorMemberCode || null) !== (sponsor.memberCode || null)) {
+      report('sponsor', `${a.memberCode}: sponsorMemberCode is "${a.sponsorMemberCode}" but the sponsor is ${sponsor.memberCode}.`);
     }
     if (String(a.sponsorId) === String(a._id)) {
       report('sponsor', `${a.memberCode} sponsors themselves.`);
@@ -188,7 +207,10 @@ const run = async () => {
   // --- Result ---------------------------------------------------------------
   if (!problems.length) {
     console.log('All checks passed — tree is consistent.');
-    console.log(`  root: ${roots[0]?.memberCode}  |  members: ${all.length}  |  max depth: ${Math.max(...all.map((a) => a.depth))}`);
+    console.log(
+      `  root: ${roots[0]?.memberCode}  |  in tree: ${inTree.length}  |  unplaced: ${unplaced.length}` +
+        `  |  max depth: ${Math.max(0, ...inTree.map((a) => a.depth))}`
+    );
     await mongoose.disconnect();
     return;
   }

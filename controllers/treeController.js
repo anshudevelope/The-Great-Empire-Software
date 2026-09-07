@@ -4,7 +4,7 @@ const { ROLES } = require('../config/constants');
 // Everything a tree node or list row needs to render, and nothing more.
 const NODE_FIELDS =
   'memberCode fullName email phone status tier position profileImage ' +
-  'leftChild rightChild parentId sponsorId sponsorCode ancestors depth directCount createdAt';
+  'leftChild rightChild parentId sponsorId sponsorCode sponsorMemberCode treeStatus ancestors depth directCount createdAt';
 
 const toNode = (a, parentCode = null) => ({
   _id: a._id,
@@ -19,7 +19,12 @@ const toNode = (a, parentCode = null) => ({
   tier: a.tier,
   position: a.position,
   profileImage: a.profileImage,
+  // This member's own Sponsor ID (SPN####) …
   sponsorCode: a.sponsorCode,
+  // … and the code of whoever sponsored them (TRG####), which is what the
+  // node tooltip shows as "Sponsor PID".
+  sponsorMemberCode: a.sponsorMemberCode,
+  treeStatus: a.treeStatus,
   depth: a.depth,
   directCount: a.directCount,
   joinedAt: a.createdAt,

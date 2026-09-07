@@ -1,5 +1,5 @@
 const Associate = require('../models/Associate');
-const { POSITIONS } = require('../config/constants');
+const { POSITIONS, TREE_STATUSES } = require('../config/constants');
 const { SlotTakenError } = require('../utils/transaction');
 
 // Defensive ceiling for any tree walk. If a cycle ever reaches the data — a bad
@@ -150,7 +150,18 @@ const createAndPlace = async ({ memberData, requestedParentId, position }, sessi
   }
 
   const [member] = await Associate.create(
-    [{ ...memberData, parentId: targetParentId, position: targetParentId ? position : null, ancestors, depth }],
+    [
+      {
+        ...memberData,
+        parentId: targetParentId,
+        position: targetParentId ? position : null,
+        ancestors,
+        depth,
+        // With a parent they're placed; without one the caller decides whether
+        // this is the tree root or simply not placed yet.
+        treeStatus: targetParentId ? TREE_STATUSES.PLACED : memberData.treeStatus || TREE_STATUSES.UNPLACED
+      }
+    ],
     { session }
   );
 
@@ -160,6 +171,48 @@ const createAndPlace = async ({ memberData, requestedParentId, position }, sessi
   }
 
   return member;
+};
+
+/**
+ * Put an EXISTING associate into the tree.
+ *
+ * The counterpart to createAndPlace: the member already exists as a record and
+ * is simply taking up a node. Used both when the admin places someone directly
+ * and when a sponsor redeems a referral.
+ *
+ * Must run inside withTransaction() so a SlotTakenError rolls the whole thing
+ * back rather than half-placing the member.
+ */
+const placeExisting = async ({ memberId, requestedParentId, position }, session = null) => {
+  const member = await Associate.findById(memberId).session(session);
+  if (!member) throw httpError('Associate not found.', 404);
+
+  if (member.treeStatus !== TREE_STATUSES.UNPLACED) {
+    throw httpError(`${member.memberCode} is already in the tree.`, 409);
+  }
+
+  const targetParentId = await resolveTreeTarget(requestedParentId, position, null, session);
+
+  // Placing someone under their own descendant is impossible here (an unplaced
+  // member has no descendants), but the target must still not be the member.
+  if (String(targetParentId) === String(member._id)) {
+    throw httpError('An associate cannot be placed under themselves.', 400);
+  }
+
+  const parent = await Associate.findById(targetParentId).select('ancestors depth memberCode').session(session);
+  if (!parent) throw httpError('Resolved parent node not found.', 404);
+
+  const claimed = await claimSlot(targetParentId, position, member._id, session);
+  if (!claimed) throw new SlotTakenError();
+
+  member.parentId = targetParentId;
+  member.position = position;
+  member.ancestors = [...parent.ancestors, parent._id];
+  member.depth = parent.depth + 1;
+  member.treeStatus = TREE_STATUSES.PLACED;
+  await member.save({ session });
+
+  return { member, parent };
 };
 
 /**
@@ -194,6 +247,7 @@ module.exports = {
   detachFromParent,
   repathSubtree,
   createAndPlace,
+  placeExisting,
   previewPlacement,
   childField,
   httpError

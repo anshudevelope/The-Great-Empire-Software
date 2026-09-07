@@ -41,36 +41,28 @@ const adminOnly = requireRole(ROLES.ADMIN);
 // '/placement-preview' as an id and try to load an associate called that.
 // ---------------------------------------------------------------------------
 
-// Path B: an associate redeems a voucher to add a member. The voucher supplies
-// the sponsor and tier; the only tree input is the leg.
+// A sponsor places their referred member in the tree. The referral supplies who
+// the member is; the only input is the leg.
 router.post(
   '/redeem',
-  rateLimit({ windowMs: 10 * 60_000, max: 20, message: 'Too many registration attempts. Please wait a few minutes.' }),
-  cpUpload,
+  rateLimit({ windowMs: 10 * 60_000, max: 20, message: 'Too many placement attempts. Please wait a few minutes.' }),
   redeemReferral
 );
 
 // "Will be placed under TRG0098 (3 levels below you)"
 router.get('/placement-preview', getPlacementPreview);
 
-// Searchable selects (issuedTo, receivedBy, sponsor pickers)
-router.get(
-  '/search',
-  adminOnly,
-  rateLimit({ windowMs: 60_000, max: 60 }),
-  searchAssociates
-);
+// Searchable selects (member, sponsor and receivedBy pickers). Open to
+// associates too, since they can now register members.
+router.get('/search', rateLimit({ windowMs: 60_000, max: 60 }), searchAssociates);
 
-// Sponsor-code validation on the admin form
-router.get(
-  '/lookup/:memberCode',
-  adminOnly,
-  rateLimit({ windowMs: 60_000, max: 60 }),
-  lookupByCode
-);
+// Code validation on the registration form
+router.get('/lookup/:memberCode', rateLimit({ windowMs: 60_000, max: 60 }), lookupByCode);
 
-// Path A: admin creates directly (root, corrections, offline onboarding)
-router.post('/register', adminOnly, cpUpload, registerAssociate);
+// Registration is open to admins AND associates. Placement stays optional, and
+// only an admin may set it at creation (enforced in the controller).
+router.post('/register', cpUpload, registerAssociate);
+
 router.get('/', adminOnly, getAllAssociates);
 router.patch('/:id/status', adminOnly, updateStatus);
 router.delete('/:id', adminOnly, deleteAssociate);

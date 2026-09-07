@@ -2,11 +2,18 @@ const mongoose = require('mongoose');
 const { REFERRAL_STATUSES, TIERS, PAYMENT_MODES } = require('../config/constants');
 
 /**
- * A referral voucher — the gate for every new member.
+ * A referral — the record of one member being paid for by another.
  *
- * Flow: an associate contacts the admin offline and pays. The admin generates
- * a voucher issued TO that associate. The associate later redeems it from
- * their dashboard (Phase 3) to register a new member.
+ * Flow:
+ *   1. Admin registers the new associate (C), usually with no tree placement.
+ *   2. Existing associate (B) pays for C offline.
+ *   3. Admin raises a referral linking C to sponsor B, recording the payment.
+ *   4. The tree slot is filled either by the admin there and then, or later by
+ *      B from their dashboard using the referral number + PIN.
+ *
+ * Note what redeeming does NOT do any more: it never creates a member. C
+ * already exists from step 1, so redemption only assigns the sponsor and puts
+ * C into the binary tree.
  *
  * Because the voucher is bound to `issuedTo`, the sponsor of the new member is
  * derived, never typed — which is what removes the sponsor field from the
@@ -55,12 +62,30 @@ const referralSchema = new mongoose.Schema(
     receivedByName: { type: String, default: '' },
     receivedByCode: { type: String, default: '' },
 
+    // Snapshot of the referred member's tier at the time of the transaction —
+    // an invoice is a historical document and must not shift if anything on the
+    // member record changes later.
     tier: { type: String, enum: Object.values(TIERS), required: true },
 
-    // The associate this voucher belongs to. Becomes the SPONSOR of whoever
-    // is registered with it. Only this associate may redeem it.
+    // ---------------------------------------------------------------------
+    // The referred member — created BEFORE the referral, not by it.
+    //
+    // Admin registers the associate first (usually unplaced), then raises a
+    // referral that links that member to whoever paid for them. Redeeming no
+    // longer creates anybody; it only places this member in the tree.
+    // ---------------------------------------------------------------------
+    // No `index: true` here on purpose — the partial unique index declared
+    // below covers it. Declaring both makes Mongoose silently DROP the partial
+    // one, which would leave one-referral-per-member unenforced.
+    member: { type: mongoose.Schema.Types.ObjectId, ref: 'Associate', required: true },
+    memberCode: { type: String, required: true },
+    memberName: { type: String, default: '' },
+
+    // The sponsor (referrer) — the existing associate who paid for the member
+    // above and becomes their sponsor. Only they may redeem this referral.
     issuedTo: { type: mongoose.Schema.Types.ObjectId, ref: 'Associate', required: true, index: true },
-    issuedToCode: { type: String, required: true },
+    issuedToCode: { type: String, required: true },       // their TRG####
+    issuedToSponsorCode: { type: String, default: null }, // their SPN####
 
     issuedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Associate', required: true },
 
@@ -71,10 +96,13 @@ const referralSchema = new mongoose.Schema(
       index: true
     },
 
-    // Set on redemption (Phase 3).
-    usedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Associate', default: null },
-    usedByCode: { type: String, default: null },
+    // Set once the member has actually been placed in the tree.
     usedAt: { type: Date, default: null },
+    // 'admin' when the admin placed the member at referral time, 'sponsor' when
+    // the referrer did it themselves with the PIN.
+    placedBy: { type: String, enum: ['admin', 'sponsor', null], default: null },
+    placedUnderCode: { type: String, default: null },
+    placedPosition: { type: String, default: null },
 
     cancelledBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Associate', default: null },
     cancelledAt: { type: Date, default: null },
@@ -94,6 +122,14 @@ const referralSchema = new mongoose.Schema(
 
 referralSchema.index({ issuedTo: 1, status: 1 });
 referralSchema.index({ createdAt: -1 });
+
+// A member can only be referred once — a second live referral for the same
+// person would let two sponsors both claim them. Cancelled ones are excluded so
+// a mistake can be cancelled and re-raised.
+referralSchema.index(
+  { member: 1 },
+  { unique: true, partialFilterExpression: { status: { $in: ['unused', 'used'] } } }
+);
 
 referralSchema.virtual('isLocked').get(function () {
   return Boolean(this.lockedUntil && this.lockedUntil > new Date());

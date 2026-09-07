@@ -45,10 +45,15 @@ const toInvoice = (referral, billedTo) => {
       type: 'Referral',
       referenceNo: referral.referralNo,
       issuedAt: referral.createdAt,
-      // Present once the referral has been redeemed, so the invoice shows what
-      // the payment ultimately produced.
-      resultedIn: referral.usedByCode
-        ? { memberCode: referral.usedByCode, name: referral.usedBy?.fullName || null, at: referral.usedAt }
+      // The member this payment was for. Known from the moment the referral is
+      // raised, since the member is registered before it.
+      forMember: referral.memberCode
+        ? {
+            memberCode: referral.memberCode,
+            name: referral.member?.fullName || referral.memberName || null,
+            placedAt: referral.usedAt,
+            placedUnder: referral.placedUnderCode
+          }
         : null
     },
 
@@ -136,7 +141,7 @@ exports.listInvoices = async (req, res, next) => {
     const [rows, total, totals] = await Promise.all([
       Referral.find(filter)
         .populate('issuedTo', 'memberCode fullName email phone address city state pinCode')
-        .populate('usedBy', 'memberCode fullName')
+        .populate('member', 'memberCode fullName')
         .sort({ receivedOn: -1 })
         .skip((page - 1) * limit)
         .limit(limit),
@@ -182,7 +187,7 @@ exports.getInvoice = async (req, res, next) => {
   try {
     const referral = await Referral.findById(req.params.id)
       .populate('issuedTo', 'memberCode fullName email phone address city state pinCode')
-      .populate('usedBy', 'memberCode fullName');
+      .populate('member', 'memberCode fullName');
 
     if (!referral) {
       return res.status(404).json({ success: false, message: 'Invoice not found.' });

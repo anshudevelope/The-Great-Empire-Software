@@ -4,11 +4,15 @@ const Associate = require('../models/Associate');
 const { nextReferralNo, nextInvoiceNo, generatePin } = require('../utils/codes');
 const { assertRedeemable } = require('../services/referralService');
 const { record, ACTIONS } = require('../services/auditService');
+const { withTransaction } = require('../utils/transaction');
+const { placeExisting } = require('../services/placementService');
 const {
   ROLES,
   STATUSES,
   TIERS,
   TIER_LABELS,
+  POSITIONS,
+  TREE_STATUSES,
   REFERRAL_STATUSES,
   PAYMENT_MODES
 } = require('../config/constants');
@@ -20,10 +24,19 @@ const toInvoice = (referral) => ({
   referralNo: referral.referralNo,
   issuedAt: referral.createdAt,
   issuedBy: referral.issuedBy?.fullName || null,
+  // The sponsor — who paid for the member and gets the referral credit.
   issuedTo: {
     _id: referral.issuedTo?._id || referral.issuedTo,
     name: referral.issuedTo?.fullName || null,
-    memberCode: referral.issuedToCode
+    memberCode: referral.issuedToCode,
+    sponsorCode: referral.issuedToSponsorCode || referral.issuedTo?.sponsorCode || null
+  },
+  // The referred member — created before the referral, not by it.
+  member: {
+    _id: referral.member?._id || referral.member,
+    name: referral.member?.fullName || referral.memberName || null,
+    memberCode: referral.memberCode,
+    treeStatus: referral.member?.treeStatus || null
   },
   tier: referral.tier,
   tierLabel: TIER_LABELS[referral.tier],
@@ -41,10 +54,17 @@ const toInvoice = (referral) => ({
 
   status: referral.status,
   pinHint: referral.pinLast2 ? `••••${referral.pinLast2}` : null,
-  usedBy: referral.usedBy
-    ? { _id: referral.usedBy._id || referral.usedBy, name: referral.usedBy.fullName || null, memberCode: referral.usedByCode }
-    : null,
+
+  // How the member got into the tree, once they did.
   usedAt: referral.usedAt,
+  placement: referral.usedAt
+    ? {
+        by: referral.placedBy,
+        under: referral.placedUnderCode,
+        position: referral.placedPosition
+      }
+    : null,
+
   cancelledAt: referral.cancelledAt,
   cancelReason: referral.cancelReason || '',
   readAt: referral.readAt,
@@ -53,9 +73,9 @@ const toInvoice = (referral) => ({
 
 const populateAll = (query) =>
   query
-    .populate('issuedTo', 'memberCode fullName email phone')
+    .populate('issuedTo', 'memberCode sponsorCode fullName email phone')
     .populate('issuedBy', 'fullName email')
-    .populate('usedBy', 'memberCode fullName');
+    .populate('member', 'memberCode fullName treeStatus');
 
 // ---------------------------------------------------------------------------
 // POST /api/referrals  (admin)
@@ -66,16 +86,28 @@ const populateAll = (query) =>
 // ---------------------------------------------------------------------------
 exports.createReferral = async (req, res, next) => {
   try {
-    const { issuedTo, tier, amountPaid, notes, paymentMode, paymentRef, receivedOn, receivedBy } = req.body;
+    const {
+      member: memberId,
+      issuedTo,
+      amountPaid,
+      notes,
+      paymentMode,
+      paymentRef,
+      receivedOn,
+      receivedBy,
+      // Optional: admin can fill the tree slot right here instead of leaving it
+      // to the sponsor.
+      position
+    } = req.body;
 
-    if (!issuedTo) {
-      return res.status(400).json({ success: false, message: 'issuedTo (associate id) is required.' });
+    if (!memberId) {
+      return res.status(400).json({ success: false, message: 'member (the referred associate) is required.' });
     }
-    if (!Object.values(TIERS).includes(tier)) {
-      return res.status(400).json({
-        success: false,
-        message: `Tier is required and must be one of: ${Object.values(TIERS).join(', ')}.`
-      });
+    if (!issuedTo) {
+      return res.status(400).json({ success: false, message: 'issuedTo (the sponsor) is required.' });
+    }
+    if (String(memberId) === String(issuedTo)) {
+      return res.status(400).json({ success: false, message: 'An associate cannot sponsor themselves.' });
     }
 
     const parsedAmount = Number(amountPaid);
@@ -110,18 +142,56 @@ exports.createReferral = async (req, res, next) => {
       }
     }
 
-    const associate = await Associate.findById(issuedTo).select('memberCode fullName role status');
-    if (!associate) {
-      return res.status(404).json({ success: false, message: 'Associate not found.' });
+    // --- The sponsor (who paid) ------------------------------------------
+    const sponsor = await Associate.findById(issuedTo).select('memberCode sponsorCode fullName role status');
+    if (!sponsor) {
+      return res.status(404).json({ success: false, message: 'Sponsor not found.' });
     }
-    if (associate.role !== ROLES.ASSOCIATE) {
-      return res.status(400).json({ success: false, message: 'Referrals can only be issued to associates.' });
+    if (sponsor.role !== ROLES.ASSOCIATE) {
+      return res.status(400).json({ success: false, message: 'Only an associate can be the sponsor.' });
     }
-    if (associate.status !== STATUSES.APPROVED) {
+    if (sponsor.status !== STATUSES.APPROVED) {
       return res.status(400).json({
         success: false,
-        message: `Cannot issue a referral to an account that is ${associate.status}.`
+        message: `Cannot make a ${sponsor.status} account a sponsor.`
       });
+    }
+
+    // --- The referred member (created earlier, usually unplaced) ----------
+    const member = await Associate.findById(memberId).select('memberCode fullName role tier treeStatus sponsorId');
+    if (!member) {
+      return res.status(404).json({ success: false, message: 'Referred associate not found.' });
+    }
+    if (member.role !== ROLES.ASSOCIATE) {
+      return res.status(400).json({ success: false, message: 'Only an associate can be referred.' });
+    }
+    if (member.sponsorId) {
+      return res.status(400).json({
+        success: false,
+        message: `${member.memberCode} already has a sponsor.`
+      });
+    }
+    if (member.treeStatus !== TREE_STATUSES.UNPLACED) {
+      return res.status(400).json({
+        success: false,
+        message: `${member.memberCode} is already in the tree, so they cannot be referred.`
+      });
+    }
+
+    // One live referral per member — two would let two sponsors both claim them.
+    const existing = await Referral.findOne({
+      member: member._id,
+      status: { $in: [REFERRAL_STATUSES.UNUSED, REFERRAL_STATUSES.USED] }
+    }).select('referralNo');
+    if (existing) {
+      return res.status(409).json({
+        success: false,
+        message: `${member.memberCode} already has referral ${existing.referralNo}.`
+      });
+    }
+
+    if (position && ![POSITIONS.LEFT, POSITIONS.RIGHT].includes(position)) {
+      return res.status(400).json({ success: false, message: 'position must be "Left" or "Right".' });
     }
 
     const pin = generatePin();
@@ -137,12 +207,64 @@ exports.createReferral = async (req, res, next) => {
       receivedBy: receiver ? receiver._id : null,
       receivedByName: receiver ? receiver.fullName : '',
       receivedByCode: receiver ? receiver.memberCode || '' : '',
-      tier,
-      issuedTo: associate._id,
-      issuedToCode: associate.memberCode,
+      // Snapshot from the member — the tier is theirs, fixed at their creation.
+      tier: member.tier,
+      member: member._id,
+      memberCode: member.memberCode,
+      memberName: member.fullName,
+      issuedTo: sponsor._id,
+      issuedToCode: sponsor.memberCode,
+      issuedToSponsorCode: sponsor.sponsorCode || null,
       issuedBy: req.user._id,
       notes: notes || ''
     });
+
+    // --- Optional: admin places the member straight away -------------------
+    // Offered because the sponsor may not be able to do it themselves. When
+    // skipped, the referral stays 'unused' and the sponsor places the member
+    // with the referral number + PIN.
+    let placement = null;
+    if (position) {
+      try {
+        placement = await withTransaction(async (session) => {
+          const { member: placedMember, parent } = await placeExisting(
+            { memberId: member._id, requestedParentId: sponsor._id, position },
+            session
+          );
+
+          placedMember.sponsorId = sponsor._id;
+          placedMember.sponsorMemberCode = sponsor.memberCode;
+          placedMember.sponsorSponsorCode = sponsor.sponsorCode || null;
+          placedMember.status = STATUSES.APPROVED;
+          await placedMember.save({ session });
+
+          await Referral.findByIdAndUpdate(
+            referral._id,
+            {
+              status: REFERRAL_STATUSES.USED,
+              usedAt: new Date(),
+              placedBy: 'admin',
+              placedPosition: position,
+              placedUnderCode: parent.memberCode
+            },
+            { session }
+          );
+
+          await Associate.findByIdAndUpdate(sponsor._id, { $inc: { directCount: 1 } }, { session });
+
+          return { placedUnder: parent.memberCode, position, spilledOver: String(parent._id) !== String(sponsor._id) };
+        });
+      } catch (placementError) {
+        // The referral itself is already saved and valid — surface the failure
+        // but don't lose the payment record. The sponsor can still redeem.
+        return res.status(placementError.status || 409).json({
+          success: false,
+          message: `Referral ${referral.referralNo} was created, but placement failed: ${placementError.message}`,
+          pin,
+          data: toInvoice(await populateAll(Referral.findById(referral._id)))
+        });
+      }
+    }
 
     const populated = await populateAll(Referral.findById(referral._id));
 
@@ -154,20 +276,25 @@ exports.createReferral = async (req, res, next) => {
       targetCode: referral.referralNo,
       after: {
         invoiceNo: referral.invoiceNo,
-        issuedTo: associate.memberCode,
-        tier,
+        member: member.memberCode,
+        sponsor: sponsor.memberCode,
+        tier: member.tier,
         amountPaid: parsedAmount,
         paymentMode: paymentMode || null,
         paymentRef: paymentRef || '',
         receivedOn: receivedOnDate,
-        receivedBy: receiver ? receiver.memberCode || receiver.fullName : null
+        receivedBy: receiver ? receiver.memberCode || receiver.fullName : null,
+        placedByAdmin: Boolean(placement)
       }
     });
 
     return res.status(201).json({
       success: true,
-      message: 'Referral generated. Copy the PIN now — it cannot be shown again.',
+      message: placement
+        ? `Referral created and ${member.memberCode} placed under ${placement.placedUnder}.`
+        : 'Referral created. Copy the PIN now — it cannot be shown again. The sponsor uses it to place this member in the tree.',
       pin, // shown exactly once, never retrievable afterwards
+      placement,
       data: toInvoice(populated)
     });
   } catch (error) {
@@ -330,13 +457,18 @@ exports.verifyReferral = async (req, res, next) => {
         tier: referral.tier,
         tierLabel: TIER_LABELS[referral.tier],
         amountPaid: referral.amountPaid,
-        // The sponsor of the new member is whoever holds this voucher — the
-        // caller. This is what lets the registration form skip the sponsor
-        // field entirely.
+        // The sponsor is whoever holds this referral — the caller.
         sponsor: {
           _id: req.user._id,
           name: req.user.fullName,
           memberCode: req.user.memberCode
+        },
+        // Who will be placed. The member already exists, so the placement form
+        // shows them rather than asking for their details again.
+        member: {
+          _id: referral.member,
+          name: referral.memberName || null,
+          memberCode: referral.memberCode
         }
       }
     });

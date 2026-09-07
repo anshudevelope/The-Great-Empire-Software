@@ -2,8 +2,7 @@ const Associate = require('../models/Associate');
 const Referral = require('../models/Referral');
 const bcrypt = require('bcryptjs');
 const { cloudinary } = require('../config/cloudinary');
-const { nextMemberCode } = require('../utils/codes');
-const { generateTempPassword } = require('../utils/password');
+const { nextMemberCode, nextSponsorCode } = require('../utils/codes');
 const { withTransaction } = require('../utils/transaction');
 const { assertRedeemable } = require('../services/referralService');
 const { record, ACTIONS } = require('../services/auditService');
@@ -12,6 +11,7 @@ const {
   detachFromParent,
   repathSubtree,
   createAndPlace,
+  placeExisting,
   previewPlacement,
   claimSlot
 } = require('../services/placementService');
@@ -21,6 +21,7 @@ const {
   TIERS,
   TIER_LABELS,
   POSITIONS,
+  TREE_STATUSES,
   REFERRAL_STATUSES,
   ADMIN_UPDATABLE_FIELDS,
   SELF_UPDATABLE_FIELDS,
@@ -29,7 +30,7 @@ const {
 
 // Personal fields accepted for a new member. Structural fields (tier, sponsor,
 // placement) are never read from the form on the redeem path — they come from
-// the voucher.
+// the referral.
 const MEMBER_DETAIL_FIELDS = [
   'title', 'fullName', 'fatherOrHusbandName', 'maritalStatus', 'gender',
   'phone', 'email', 'dob', 'age',
@@ -64,12 +65,19 @@ const assertUniqueContact = async ({ email, phone }) => {
 };
 
 // ---------------------------------------------------------------------------
-// 1. REGISTER ASSOCIATE — Path A: admin creates directly, no voucher.
-//    Used for the root (TRG0001), corrections and offline onboarding.
+// 1. REGISTER ASSOCIATE — creates the person, not their position.
+//
+// Available to admins AND associates. Tree placement is optional: a new member
+// exists as a record straight away and shows up in listings, but only occupies
+// a node when someone places them — an admin from Edit, or their sponsor by
+// redeeming a referral.
+//
+// Sponsorship is deliberately NOT set here. Who referred a member is decided by
+// the referral that records who paid for them.
 // ---------------------------------------------------------------------------
 exports.registerAssociate = async (req, res, next) => {
   try {
-    const { password, sponsorId, parentId, position, tier } = req.body;
+    const { password, parentId, position, tier } = req.body;
 
     const details = pickAllowedFields(req.body, MEMBER_DETAIL_FIELDS);
 
@@ -85,80 +93,84 @@ exports.registerAssociate = async (req, res, next) => {
 
     await assertUniqueContact(details);
 
-    const requestedParentId = parentId || sponsorId || null;
+    const wantsPlacement = Boolean(parentId && position);
 
-    // The root (TRG0001) is the ONLY member allowed to have no parent. Without
-    // this guard a second parentless registration silently starts a detached
-    // second tree, and every downline report under-counts from then on.
-    if (!requestedParentId) {
-      const rootExists = await Associate.exists({ role: ROLES.ASSOCIATE, parentId: null });
-      if (rootExists) {
-        return res.status(400).json({
-          success: false,
-          message: 'A root associate already exists. A parent or sponsor is required.'
-        });
-      }
-    } else if (!position) {
+    if (parentId && !position) {
       return res.status(400).json({
         success: false,
-        message: 'Position (Left or Right) is required when a parent or sponsor is given.'
+        message: 'Position (Left or Right) is required when a parent is given.'
       });
     }
 
-    let sponsorCode = null;
-    if (sponsorId) {
-      const sponsorDoc = await Associate.findById(sponsorId).select('memberCode');
-      if (!sponsorDoc) return res.status(404).json({ success: false, message: 'Sponsor not found.' });
-      sponsorCode = sponsorDoc.memberCode || null;
+    // Only an admin may drop someone straight into the tree at creation. An
+    // associate creates the record; placement still goes through a referral.
+    if (wantsPlacement && req.user.role !== ROLES.ADMIN) {
+      return res.status(403).json({
+        success: false,
+        message: 'Only an admin can place an associate in the tree at creation.'
+      });
+    }
+
+    // Exactly one member may be the tree root. "Unplaced" and "root" both have
+    // parentId null, so the distinction lives in treeStatus — without it the
+    // single-root rule would have nothing to check.
+    let treeStatus = TREE_STATUSES.UNPLACED;
+    if (!wantsPlacement) {
+      const anyInTree = await Associate.exists({
+        role: ROLES.ASSOCIATE,
+        treeStatus: { $ne: TREE_STATUSES.UNPLACED }
+      });
+      // The very first associate seeds the root, so a fresh install works
+      // without a special flag. Everyone after that starts unplaced.
+      if (!anyInTree) treeStatus = TREE_STATUSES.ROOT;
     }
 
     const { profileImage, documents } = collectUploads(req);
 
-    // Minted outside the transaction so a retry reuses the same code rather
-    // than burning a new one on every attempt.
+    // Minted outside the transaction so a retry reuses the same codes rather
+    // than burning new ones on every attempt.
     const memberCode = await nextMemberCode();
+    const sponsorCode = await nextSponsorCode();
 
-    const member = await withTransaction(async (session) => {
-      const created = await createAndPlace(
+    const member = await withTransaction(async (session) =>
+      createAndPlace(
         {
           memberData: {
             ...details,
             memberCode,
-            password: await bcrypt.hash(password, await bcrypt.genSalt(10)),
-            sponsorId: sponsorId || null,
+            // The member's OWN Sponsor ID, issued to everyone at creation so
+            // they can be referred to as a sponsor from day one.
             sponsorCode,
+            password: await bcrypt.hash(password, await bcrypt.genSalt(10)),
             tier,
             status: STATUSES.PENDING,
+            treeStatus,
             // Whoever creates the account knows the password they typed, so
             // the member must replace it before they can do anything.
             mustChangePassword: true,
             profileImage,
             documents
           },
-          requestedParentId,
+          requestedParentId: wantsPlacement ? parentId : null,
           position
         },
         session
-      );
-
-      if (sponsorId) {
-        await Associate.findByIdAndUpdate(sponsorId, { $inc: { directCount: 1 } }, { session });
-      }
-
-      return created;
-    });
+      )
+    );
 
     await record(req, {
       action: ACTIONS.MEMBER_REGISTERED,
       targetType: 'Associate',
       target: member._id,
       targetCode: member.memberCode,
-      after: { tier, sponsorCode, parentId: member.parentId, position: member.position }
+      after: { tier, sponsorCode, treeStatus: member.treeStatus, parentId: member.parentId, position: member.position }
     });
 
     return res.status(201).json({
       success: true,
-      message: 'Registration successful! Account pending admin approval.',
+      message: wantsPlacement
+        ? 'Associate registered and placed in the tree.'
+        : 'Associate registered. They are not in the tree yet — place them from Edit, or raise a referral so their sponsor can.',
       data: member // toJSON transform drops the password hash
     });
   } catch (error) {
@@ -167,10 +179,11 @@ exports.registerAssociate = async (req, res, next) => {
 };
 
 // ---------------------------------------------------------------------------
-// 2. REDEEM A REFERRAL — Path B: an associate adds a member using a voucher.
+// 2. REDEEM A REFERRAL — the sponsor places their referred member in the tree.
 //
-// The voucher supplies the sponsor and the tier, so the form only asks for the
-// new member's details and ONE tree input: which leg.
+// Redeeming no longer creates anybody: the member already exists, registered by
+// an admin before the referral was raised. All this does is assign the sponsor
+// and fill a tree slot, so the form asks for ONE thing — which leg.
 // ---------------------------------------------------------------------------
 exports.redeemReferral = async (req, res, next) => {
   try {
@@ -180,32 +193,23 @@ exports.redeemReferral = async (req, res, next) => {
       return res.status(400).json({ success: false, message: 'Position must be either "Left" or "Right".' });
     }
 
-    const details = pickAllowedFields(req.body, MEMBER_DETAIL_FIELDS);
-    if (!details.email || !details.phone || !details.fullName) {
-      return res.status(400).json({ success: false, message: 'Full name, email and phone are required.' });
-    }
-
-    // Re-run the full voucher check here rather than trusting that /verify was
-    // called first — nothing stops a client from calling redeem directly.
-    // This also enforces that the voucher was issued to THIS caller.
+    // Re-run the full check here rather than trusting that /verify was called
+    // first — nothing stops a client calling redeem directly. This also
+    // enforces that the referral was issued to THIS caller.
     const referral = await assertRedeemable(referralNo, pin, req.user._id);
 
-    await assertUniqueContact(details);
-
-    const { profileImage, documents } = collectUploads(req);
-
-    // Shown to the sponsor exactly once. The member is flagged
-    // mustChangePassword, so the sponsor never learns the permanent one.
-    const tempPassword = generateTempPassword();
-    const memberCode = await nextMemberCode();
-
-    const member = await withTransaction(async (session) => {
-      // Claim the voucher FIRST, conditionally. Without this a double-submit
-      // creates two members from one paid voucher. If the placement below
-      // fails, the transaction rolls this back to 'unused'.
+    const placed = await withTransaction(async (session) => {
+      // Claim the referral FIRST, conditionally, so a double-submit can't run
+      // the placement twice. If placement fails below, the transaction rolls
+      // this back to 'unused'.
       const claimed = await Referral.findOneAndUpdate(
         { _id: referral._id, status: REFERRAL_STATUSES.UNUSED },
-        { status: REFERRAL_STATUSES.USED, usedAt: new Date() },
+        {
+          status: REFERRAL_STATUSES.USED,
+          usedAt: new Date(),
+          placedBy: 'sponsor',
+          placedPosition: position
+        },
         { new: true, session }
       );
       if (!claimed) {
@@ -214,45 +218,36 @@ exports.redeemReferral = async (req, res, next) => {
         throw err;
       }
 
-      const created = await createAndPlace(
-        {
-          memberData: {
-            ...details,
-            memberCode,
-            password: await bcrypt.hash(tempPassword, await bcrypt.genSalt(10)),
-            // Sponsor and tier come from the voucher, never from the form.
-            sponsorId: referral.issuedTo,
-            sponsorCode: referral.issuedToCode,
-            tier: referral.tier,
-            // A valid PIN IS the approval — admin already vetted the person and
-            // collected payment when issuing the voucher.
-            status: STATUSES.APPROVED,
-            mustChangePassword: true,
-            profileImage,
-            documents
-          },
-          // Spillover starts at the sponsor, so the new member always lands
-          // inside the sponsor's own downline.
-          requestedParentId: referral.issuedTo,
-          position
-        },
+      // Spillover starts at the sponsor, so the member always lands inside the
+      // sponsor's own downline.
+      const { member, parent } = await placeExisting(
+        { memberId: referral.member, requestedParentId: referral.issuedTo, position },
         session
       );
 
+      // The referral is what assigns sponsorship — the member was created
+      // without a sponsor precisely so this step decides it.
+      member.sponsorId = referral.issuedTo;
+      member.sponsorMemberCode = referral.issuedToCode;
+      member.sponsorSponsorCode = referral.issuedToSponsorCode;
+      // A valid PIN is the approval: admin vetted the person and took payment
+      // when the referral was raised.
+      member.status = STATUSES.APPROVED;
+      await member.save({ session });
+
       await Referral.findByIdAndUpdate(
         referral._id,
-        { usedBy: created._id, usedByCode: created.memberCode },
+        { placedUnderCode: parent.memberCode },
         { session }
       );
 
       await Associate.findByIdAndUpdate(referral.issuedTo, { $inc: { directCount: 1 } }, { session });
 
-      return created;
+      return { member, parent };
     });
 
-    const parent = member.parentId
-      ? await Associate.findById(member.parentId).select('memberCode fullName')
-      : null;
+    const { member, parent } = placed;
+    const spilledOver = String(member.parentId) !== String(referral.issuedTo);
 
     await record(req, {
       action: ACTIONS.MEMBER_REDEEMED,
@@ -263,31 +258,28 @@ exports.redeemReferral = async (req, res, next) => {
         referralNo: referral.referralNo,
         invoiceNo: referral.invoiceNo,
         sponsor: referral.issuedToCode,
-        placedUnder: parent?.memberCode ?? null,
+        placedUnder: parent.memberCode,
         position: member.position,
         tier: member.tier,
-        spilledOver: parent ? String(member.parentId) !== String(referral.issuedTo) : false
+        spilledOver
       }
     });
 
-    return res.status(201).json({
+    return res.status(200).json({
       success: true,
-      message: 'Member registered successfully.',
-      // Displayed once, then never retrievable — hand it to the new member.
-      tempPassword,
+      message: `${member.memberCode} placed in your tree.`,
       data: {
         _id: member._id,
         memberCode: member.memberCode,
         fullName: member.fullName,
-        email: member.email,
         tier: member.tier,
         tierLabel: TIER_LABELS[member.tier],
         status: member.status,
         position: member.position,
         depth: member.depth,
         sponsor: { memberCode: referral.issuedToCode },
-        placedUnder: parent ? { memberCode: parent.memberCode, fullName: parent.fullName } : null,
-        spilledOver: parent ? String(member.parentId) !== String(referral.issuedTo) : false
+        placedUnder: { memberCode: parent.memberCode, fullName: parent.fullName },
+        spilledOver
       }
     });
   } catch (error) {
@@ -374,17 +366,33 @@ exports.searchAssociates = async (req, res, next) => {
       filter._id = { $ne: req.query.exclude };
     }
 
+    // The referral "which member" picker only wants people who are not yet in
+    // the tree and have no sponsor — anyone else cannot be referred.
+    if (req.query.referable === 'true') {
+      filter.treeStatus = TREE_STATUSES.UNPLACED;
+      filter.sponsorId = null;
+    } else if (req.query.treeStatus && Object.values(TREE_STATUSES).includes(req.query.treeStatus)) {
+      filter.treeStatus = req.query.treeStatus;
+    }
+
     if (q) {
       // Escape regex metacharacters — raw user input in a $regex would
       // otherwise let a query like "(((" throw, or a pathological pattern
       // burn CPU.
       const safe = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const rx = { $regex: safe, $options: 'i' };
-      filter.$or = [{ memberCode: rx }, { fullName: rx }, { email: rx }, { phone: rx }];
+      // Both codes are searchable: TRG#### and SPN####.
+      filter.$or = [
+        { memberCode: rx },
+        { sponsorCode: rx },
+        { fullName: rx },
+        { email: rx },
+        { phone: rx }
+      ];
     }
 
     const results = await Associate.find(filter)
-      .select('memberCode fullName email role status tier')
+      .select('memberCode sponsorCode fullName email role status tier treeStatus')
       .sort({ memberCode: 1 })
       .limit(limit)
       .lean();
@@ -395,13 +403,17 @@ exports.searchAssociates = async (req, res, next) => {
       data: results.map((a) => ({
         _id: a._id,
         memberCode: a.memberCode || null,
+        sponsorCode: a.sponsorCode || null,
         fullName: a.fullName,
         email: a.email,
         role: a.role,
         status: a.status,
         tier: a.tier || null,
+        treeStatus: a.treeStatus || null,
         // Ready-made dropdown label: "TRG0042 — Rakesh" / "Admin — System Administrator"
-        label: `${a.memberCode || (a.role === ROLES.ADMIN ? 'Admin' : '—')} — ${a.fullName}`
+        label: `${a.memberCode || (a.role === ROLES.ADMIN ? 'Admin' : '—')} — ${a.fullName}`,
+        // Sponsor pickers show the Sponsor ID instead: "SPN0042 — Rakesh"
+        sponsorLabel: a.sponsorCode ? `${a.sponsorCode} — ${a.fullName}` : null
       }))
     });
   } catch (error) {
@@ -415,7 +427,7 @@ exports.searchAssociates = async (req, res, next) => {
 // 6. VIEW ALL ASSOCIATES
 exports.getAllAssociates = async (req, res, next) => {
   try {
-    const { status, tier, search } = req.query;
+    const { status, tier, search, treeStatus } = req.query;
 
     // Admin accounts share this collection but sit outside the tree — they are
     // never part of a member listing.
@@ -423,12 +435,19 @@ exports.getAllAssociates = async (req, res, next) => {
 
     if (status) filter.status = status;
     if (tier) filter.tier = tier;
+    // Lets the UI list "not in the tree yet", which is now a normal state.
+    if (treeStatus && Object.values(TREE_STATUSES).includes(treeStatus)) {
+      filter.treeStatus = treeStatus;
+    }
     if (search) {
+      const safe = String(search).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const rx = { $regex: safe, $options: 'i' };
       filter.$or = [
-        { fullName: { $regex: search, $options: 'i' } },
-        { email: { $regex: search, $options: 'i' } },
-        { phone: { $regex: search, $options: 'i' } },
-        { memberCode: { $regex: search, $options: 'i' } }
+        { fullName: rx },
+        { email: rx },
+        { phone: rx },
+        { memberCode: rx },
+        { sponsorCode: rx }
       ];
     }
 
@@ -559,6 +578,9 @@ exports.updateAssociate = async (req, res, next) => {
 
       updateFields.parentId = targetParentId;
       updateFields.position = requestedPosition;
+      // This is also how an unplaced member finally enters the tree — editing
+      // them with a parent and a leg is the admin's placement path.
+      updateFields.treeStatus = TREE_STATUSES.PLACED;
     }
 
     // Passwords are changed only through POST /api/auth/change-password, which
