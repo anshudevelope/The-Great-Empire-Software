@@ -22,8 +22,8 @@ const POSITIONS = { LEFT: 'Left', RIGHT: 'Right' };
 
 const MEMBER_CODE = {
   SEQUENCE: 'memberCode',
-  PREFIX: 'TRG',
-  PAD: 4 // TRG0001 … TRG9999, then widens naturally to TRG10000
+  PREFIX: 'TGE',
+  PAD: 4 // TGE0001 … TGE9999, then widens naturally to TGE10000
 };
 
 // Every associate also gets their own Sponsor ID — the code they hand out when
