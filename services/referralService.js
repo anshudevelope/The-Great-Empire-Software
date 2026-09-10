@@ -1,66 +1,78 @@
-const bcrypt = require('bcryptjs');
+const Associate = require('../models/Associate');
 const Referral = require('../models/Referral');
-const { REFERRAL_STATUSES, REFERRAL } = require('../config/constants');
+const { PAYMENT_MODES, REFERRAL_STATUSES } = require('../config/constants');
 const { httpError } = require('./placementService');
 
 /**
- * Validates referralNo + PIN for a given caller.
- *
- * Shared by the verify endpoint and the redeem endpoint so the two can never
- * drift apart — redeem re-runs the full check rather than trusting that a
- * verify happened earlier, because nothing stops a client from calling redeem
- * directly.
- *
- * Returns the referral document (with pinHash selected) on success.
+ * Payment recorded against a referral. Shared by registration-with-sponsor and
+ * the admin's Generate Referral page so both validate money the same way.
+ * Everything is optional — a missing amount is recorded as 0, so the referral
+ * and invoice still exist for the sponsor.
  */
-const assertRedeemable = async (referralNo, pin, userId) => {
-  if (!referralNo || !pin) {
-    throw httpError('Referral number and PIN are required.', 400);
+const parsePayment = async (body) => {
+  const amountGiven = body.amountPaid !== undefined && body.amountPaid !== null && body.amountPaid !== '';
+  const amountPaid = amountGiven ? Number(body.amountPaid) : 0;
+  if (!Number.isFinite(amountPaid) || amountPaid < 0) {
+    throw httpError('Amount paid must be a non-negative number.', 400);
   }
 
-  // One generic reply for "no such voucher" and "not yours" — distinguishing
-  // them would let anyone probe which referral numbers exist.
-  const GENERIC = 'Invalid referral number or PIN.';
-
-  const referral = await Referral.findOne({ referralNo: String(referralNo).toUpperCase().trim() })
-    .select('+pinHash');
-
-  if (!referral) throw httpError(GENERIC, 400);
-  if (String(referral.issuedTo) !== String(userId)) throw httpError(GENERIC, 400);
-
-  // From here the caller provably owns the voucher, so specific messages are
-  // safe and genuinely useful.
-  if (referral.lockedUntil && referral.lockedUntil > new Date()) {
-    const minutes = Math.ceil((referral.lockedUntil - Date.now()) / 60000);
-    throw httpError(`Too many incorrect attempts. Try again in ${minutes} minute(s).`, 429);
+  const paymentMode = body.paymentMode || null;
+  if (paymentMode && !PAYMENT_MODES.includes(paymentMode)) {
+    throw httpError(`paymentMode must be one of: ${PAYMENT_MODES.join(', ')}.`, 400);
   }
 
-  if (referral.status !== REFERRAL_STATUSES.UNUSED) {
-    throw httpError(`This referral has already been ${referral.status}.`, 400);
+  let receivedOn = new Date();
+  if (body.receivedOn) {
+    receivedOn = new Date(body.receivedOn);
+    if (Number.isNaN(receivedOn.getTime())) throw httpError('receivedOn is not a valid date.', 400);
+  }
+  // `receivedOn` is a DATE, not a timestamp. Flattened to midnight so same-day
+  // entries tie and createdAt orders them in the invoice register.
+  receivedOn.setUTCHours(0, 0, 0, 0);
+
+  // Snapshot of who took the money, so the receipt keeps its wording even if
+  // this person is later renamed or removed.
+  let receiver = null;
+  if (body.receivedBy) {
+    receiver = await Associate.findById(body.receivedBy).select('memberCode fullName');
+    if (!receiver) throw httpError('receivedBy: person not found.', 404);
   }
 
-  const matches = await bcrypt.compare(String(pin), referral.pinHash);
-
-  if (!matches) {
-    referral.attempts += 1;
-    let message = GENERIC;
-    if (referral.attempts >= REFERRAL.MAX_ATTEMPTS) {
-      referral.lockedUntil = new Date(Date.now() + REFERRAL.LOCK_MINUTES * 60000);
-      referral.attempts = 0;
-      message = `Too many incorrect attempts. This referral is locked for ${REFERRAL.LOCK_MINUTES} minutes.`;
-    }
-    await referral.save();
-    throw httpError(message, 400);
-  }
-
-  // Correct PIN clears the failure count.
-  if (referral.attempts !== 0 || referral.lockedUntil) {
-    referral.attempts = 0;
-    referral.lockedUntil = null;
-    await referral.save();
-  }
-
-  return referral;
+  return {
+    amountPaid,
+    paymentMode,
+    paymentRef: body.paymentRef || '',
+    receivedOn,
+    receiver,
+    notes: body.notes || ''
+  };
 };
 
-module.exports = { assertRedeemable };
+// The payment/receiver fields of a Referral document, from parsePayment().
+const paymentFields = (payment) => ({
+  amountPaid: payment.amountPaid,
+  paymentMode: payment.paymentMode,
+  paymentRef: payment.paymentRef,
+  receivedOn: payment.receivedOn,
+  receivedBy: payment.receiver ? payment.receiver._id : null,
+  receivedByName: payment.receiver ? payment.receiver.fullName : '',
+  receivedByCode: payment.receiver ? payment.receiver.memberCode || '' : '',
+  notes: payment.notes
+});
+
+// Closes the member's referral once they are in the tree. A missing or
+// cancelled referral is fine — there is simply nothing to close.
+const markReferralPlaced = (memberId, { by, position, parentCode }, session = null) =>
+  Referral.findOneAndUpdate(
+    { member: memberId, status: REFERRAL_STATUSES.UNUSED },
+    {
+      status: REFERRAL_STATUSES.USED,
+      usedAt: new Date(),
+      placedBy: by,
+      placedPosition: position,
+      placedUnderCode: parentCode
+    },
+    { session }
+  );
+
+module.exports = { parsePayment, paymentFields, markReferralPlaced };

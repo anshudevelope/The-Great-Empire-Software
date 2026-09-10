@@ -1,9 +1,9 @@
 const express = require('express');
 const router = express.Router();
 const { listInvoices, getInvoice, getCompany } = require('../controllers/invoiceController');
-const { requireAuth, requirePasswordChanged } = require('../middlewares/authMiddleware');
+const { requireAuth } = require('../middlewares/authMiddleware');
 
-router.use(requireAuth, requirePasswordChanged);
+router.use(requireAuth);
 
 // Static path before '/:id', or "company" would be read as an invoice id.
 router.get('/company', getCompany);

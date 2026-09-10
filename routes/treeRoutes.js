@@ -6,13 +6,9 @@ const {
   getDirects,
   getUpline
 } = require('../controllers/treeController');
-const {
-  requireAuth,
-  requirePasswordChanged,
-  scopeToDownline
-} = require('../middlewares/authMiddleware');
+const { requireAuth, scopeToDownline } = require('../middlewares/authMiddleware');
 
-router.use(requireAuth, requirePasswordChanged);
+router.use(requireAuth);
 
 // The bare paths mean "my own tree" — the common case for the member portal,
 // and it keeps the client from having to know its own id.

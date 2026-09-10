@@ -16,10 +16,11 @@ const associateSchema = new mongoose.Schema(
         // opt back in explicitly with .select('+password').
         password: { type: String, required: true, select: false },
 
-        // Forces a reset at first login. New members are created with a
-        // system-generated temporary password handed to their sponsor, so the
-        // sponsor must never retain working credentials for their downline.
-        mustChangePassword: { type: Boolean, default: true },
+        // AES-GCM copy of the same password (utils/secretBox) so the admin panel
+        // can display it. Login never reads this — it verifies the hash above.
+        // Null for accounts created before this existed; the admin sets a new
+        // password from Edit to populate it.
+        passwordEnc: { type: String, default: null, select: false },
 
         dob: { type: Date },
         age: { type: Number },
@@ -96,17 +97,13 @@ const associateSchema = new mongoose.Schema(
         // ------------------------------------------------------------------
         // Sponsor tree (referral) — decides who gets referral credit
         // ------------------------------------------------------------------
-        // This associate's OWN Sponsor ID (SPN0001) — the code they give out
-        // when referring someone. A second identity for the same person, kept
-        // separate from memberCode so a sponsor lookup is never ambiguous.
-        sponsorCode: { type: String, uppercase: true, trim: true },
-
-        // Who referred THIS associate. Differs from parentId whenever spillover
-        // moved them down a leg.
+        // Who referred THIS associate — chosen by the admin at registration.
+        // Differs from parentId whenever the member was placed deeper in the
+        // sponsor's tree. A member has one identity only: memberCode doubles
+        // as the ID they are referred to by.
         sponsorId: { type: mongoose.Schema.Types.ObjectId, ref: 'Associate', default: null },
-        // Denormalised codes of that sponsor, for fast reports and display.
-        sponsorMemberCode: { type: String, default: null }, // their TRG####
-        sponsorSponsorCode: { type: String, default: null }, // their SPN####
+        // Denormalised member code of that sponsor, for fast reports and display.
+        sponsorMemberCode: { type: String, default: null },
         directCount: { type: Number, default: 0 },
 
         // Media Uploads
@@ -138,12 +135,6 @@ associateSchema.index(
     { unique: true, partialFilterExpression: { memberCode: { $type: 'string' } } }
 );
 
-// Same partial-unique treatment for the Sponsor ID — admins have neither code.
-associateSchema.index(
-    { sponsorCode: 1 },
-    { unique: true, partialFilterExpression: { sponsorCode: { $type: 'string' } } }
-);
-
 associateSchema.index({ ancestors: 1 });   // downline reports + ownership checks
 associateSchema.index({ sponsorId: 1 });   // "My Directs" / referral reports
 associateSchema.index({ parentId: 1 });
@@ -154,14 +145,16 @@ associateSchema.index({ depth: 1 });
 associateSchema.index({ createdAt: -1 });
 
 // ---------------------------------------------------------------------------
-// Safety net: never serialise the password hash.
+// Safety net: never serialise the password hash or its encrypted copy.
 //
 // select:false covers queries, but a document just built in memory (e.g. the
-// freshly created associate returned from register) still carries it. This
-// transform catches that path too.
+// freshly created associate returned from register) still carries them. This
+// transform catches that path too. Admin endpoints add a decrypted `password`
+// explicitly, after serialising.
 // ---------------------------------------------------------------------------
 const stripSensitive = (doc, ret) => {
     delete ret.password;
+    delete ret.passwordEnc;
     return ret;
 };
 associateSchema.set('toJSON', { transform: stripSensitive });

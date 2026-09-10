@@ -177,13 +177,18 @@ const createAndPlace = async ({ memberData, requestedParentId, position }, sessi
  * Put an EXISTING associate into the tree.
  *
  * The counterpart to createAndPlace: the member already exists as a record and
- * is simply taking up a node. Used both when the admin places someone directly
- * and when a sponsor redeems a referral.
+ * is simply taking up a node.
  *
- * Must run inside withTransaction() so a SlotTakenError rolls the whole thing
- * back rather than half-placing the member.
+ * `exact: false` spills down the leg when the slot is taken. `exact: true` is
+ * for when the caller chose a specific parent — landing somewhere else would
+ * silently ignore that choice, so a taken slot is a 409 instead.
+ *
+ * `extra` fields are saved on the member in the same write (e.g. status).
+ *
+ * Must run inside withTransaction() so a failure rolls the whole thing back
+ * rather than half-placing the member.
  */
-const placeExisting = async ({ memberId, requestedParentId, position }, session = null) => {
+const placeExisting = async ({ memberId, requestedParentId, position, exact = false, extra = {} }, session = null) => {
   const member = await Associate.findById(memberId).session(session);
   if (!member) throw httpError('Associate not found.', 404);
 
@@ -191,7 +196,13 @@ const placeExisting = async ({ memberId, requestedParentId, position }, session 
     throw httpError(`${member.memberCode} is already in the tree.`, 409);
   }
 
-  const targetParentId = await resolveTreeTarget(requestedParentId, position, null, session);
+  if (![POSITIONS.LEFT, POSITIONS.RIGHT].includes(position)) {
+    throw httpError('Position must be either "Left" or "Right".', 400);
+  }
+
+  const targetParentId = exact
+    ? requestedParentId
+    : await resolveTreeTarget(requestedParentId, position, null, session);
 
   // Placing someone under their own descendant is impossible here (an unplaced
   // member has no descendants), but the target must still not be the member.
@@ -203,8 +214,15 @@ const placeExisting = async ({ memberId, requestedParentId, position }, session 
   if (!parent) throw httpError('Resolved parent node not found.', 404);
 
   const claimed = await claimSlot(targetParentId, position, member._id, session);
-  if (!claimed) throw new SlotTakenError();
+  if (!claimed) {
+    // Retrying an exact placement can't help — the chosen slot is gone.
+    if (exact) {
+      throw httpError(`${parent.memberCode}'s ${position} leg is already taken. Choose another leg or parent.`, 409);
+    }
+    throw new SlotTakenError();
+  }
 
+  Object.assign(member, extra);
   member.parentId = targetParentId;
   member.position = position;
   member.ancestors = [...parent.ancestors, parent._id];

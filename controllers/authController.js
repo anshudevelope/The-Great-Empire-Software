@@ -3,6 +3,8 @@ const bcrypt = require('bcryptjs');
 const jwtConfig = require('../config/jwt');
 const Associate = require('../models/Associate');
 const { STATUSES } = require('../config/constants');
+const { encrypt } = require('../utils/secretBox');
+const { record, ACTIONS } = require('../services/auditService');
 
 const MIN_PASSWORD_LENGTH = 8;
 
@@ -15,10 +17,6 @@ const signToken = (user) =>
 
 // ---------------------------------------------------------------------------
 // POST /api/auth/login — one endpoint for both admins and associates.
-//
-// Replaces the previous static env-var admin check, which issued a token with
-// no user id. A member portal needs the token to say WHICH associate, so both
-// roles now authenticate against real records in the database.
 // ---------------------------------------------------------------------------
 const login = async (req, res, next) => {
     try {
@@ -52,7 +50,6 @@ const login = async (req, res, next) => {
             success: true,
             message: 'Login successful.',
             token: `Bearer ${signToken(user)}`,
-            mustChangePassword: user.mustChangePassword,
             data: user.toJSON() // transform drops the password hash
         });
     } catch (error) {
@@ -61,10 +58,7 @@ const login = async (req, res, next) => {
 };
 
 // ---------------------------------------------------------------------------
-// POST /api/auth/change-password
-//
-// Mounted behind requireAuth but NOT requirePasswordChanged — a user holding a
-// temporary password has to be able to reach exactly this route.
+// POST /api/auth/change-password — voluntary, from the profile menu.
 // ---------------------------------------------------------------------------
 const changePassword = async (req, res, next) => {
     try {
@@ -100,10 +94,18 @@ const changePassword = async (req, res, next) => {
         }
 
         user.password = await bcrypt.hash(newPassword, await bcrypt.genSalt(10));
-        user.mustChangePassword = false;
+        // Keep the admin-readable copy in step, or the panel would show a
+        // password that no longer works.
+        user.passwordEnc = encrypt(newPassword);
         await user.save();
 
-        // Re-issue so the client immediately holds a token for the cleared state.
+        await record(req, {
+            action: ACTIONS.PASSWORD_CHANGED,
+            targetType: 'Associate',
+            target: user._id,
+            targetCode: user.memberCode || null
+        });
+
         return res.status(200).json({
             success: true,
             message: 'Password updated successfully.',

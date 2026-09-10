@@ -19,8 +19,6 @@ router.post('/login', loginLimiter, login);
 // moves to /auth/login in the frontend phase.
 router.post('/admin/login', loginLimiter, login);
 
-// Both are reachable while mustChangePassword is set — change-password is the
-// route that clears the flag, and /me lets the client render who is logged in.
 router.post('/change-password', requireAuth, changePassword);
 router.get('/me', requireAuth, me);
 

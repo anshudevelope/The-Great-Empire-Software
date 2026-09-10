@@ -7,18 +7,11 @@ const {
   getSummary,
   getInvoice,
   markRead,
-  verifyReferral,
   cancelReferral
 } = require('../controllers/referralController');
-const {
-  requireAuth,
-  requirePasswordChanged,
-  requireRole,
-  ROLES
-} = require('../middlewares/authMiddleware');
-const { rateLimit } = require('../middlewares/rateLimit');
+const { requireAuth, requireRole, ROLES } = require('../middlewares/authMiddleware');
 
-router.use(requireAuth, requirePasswordChanged);
+router.use(requireAuth);
 
 const adminOnly = requireRole(ROLES.ADMIN);
 
@@ -27,19 +20,13 @@ router.get('/summary', getSummary);
 
 // Associate-facing
 router.get('/mine', myReferrals);
-router.post(
-  '/verify',
-  // Blunts high-volume probing; the per-voucher attempt lockout in the
-  // controller is the actual brute-force defence.
-  rateLimit({ windowMs: 5 * 60_000, max: 15, message: 'Too many verification attempts. Please wait a few minutes.' }),
-  verifyReferral
-);
 router.post('/:id/read', markRead);
 
-// Visible to the admin AND the associate it was issued to.
+// Visible to the admin AND the sponsor it belongs to.
 router.get('/:id/invoice', getInvoice);
 
-// Admin-only
+// Admin-only. POST gives an already-registered, unsponsored member a sponsor
+// (no PIN); new members get theirs from POST /api/associates/register.
 router.post('/', adminOnly, createReferral);
 router.get('/', adminOnly, listReferrals);
 router.patch('/:id/cancel', adminOnly, cancelReferral);

@@ -6,7 +6,7 @@ const { ROLES, TIERS, TIER_LABELS, REFERRAL_STATUSES } = require('../config/cons
 
 const REPORT_FIELDS =
   'memberCode fullName email phone status tier position depth directCount ' +
-  'sponsorId sponsorCode sponsorMemberCode treeStatus parentId ancestors createdAt';
+  'sponsorId sponsorMemberCode treeStatus parentId ancestors createdAt';
 
 const rowOf = (a, parentCode = null) => ({
   memberCode: a.memberCode,
@@ -19,7 +19,6 @@ const rowOf = (a, parentCode = null) => ({
   position: a.position,
   depth: a.depth,
   directCount: a.directCount,
-  sponsorCode: a.sponsorCode,
   sponsorMemberCode: a.sponsorMemberCode,
   treeStatus: a.treeStatus,
   placedUnderCode: parentCode,
@@ -38,7 +37,6 @@ const CSV_COLUMNS = [
   { header: 'Leg', value: (a) => a.position || '' },
   { header: 'Depth', value: (a) => a.depth },
   { header: 'Directs', value: (a) => a.directCount },
-  { header: 'Sponsor ID', value: (a) => a.sponsorCode || '' },
   { header: 'Sponsored By', value: (a) => a.sponsorMemberCode || '' },
   { header: 'Joined', value: (a) => a.createdAt }
 ];

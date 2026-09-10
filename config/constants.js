@@ -26,15 +26,6 @@ const MEMBER_CODE = {
   PAD: 4 // TGE0001 … TGE9999, then widens naturally to TGE10000
 };
 
-// Every associate also gets their own Sponsor ID — the code they hand out when
-// they refer someone. Separate from the member code so "search by sponsor ID"
-// can never be ambiguous with "search by associate ID".
-const SPONSOR_CODE = {
-  SEQUENCE: 'sponsorCode',
-  PREFIX: 'SPN',
-  PAD: 4 // SPN0001
-};
-
 // ---------------------------------------------------------------------------
 // Tree placement
 // ---------------------------------------------------------------------------
@@ -49,28 +40,21 @@ const TREE_STATUSES = {
 };
 
 // ---------------------------------------------------------------------------
-// Referral vouchers
+// Referrals
 // ---------------------------------------------------------------------------
-// Admin issues a voucher TO an associate; that associate redeems it to add a
-// new member. The voucher binds the sponsor, so the registration form never
-// asks who referred the new member — it's derived.
+// Raised automatically when the admin registers an associate under a sponsor.
+// It records the payment (and backs the invoice) and tracks placement:
+// 'unused' = not in the tree yet, 'used' = placed.
 const REFERRAL_STATUSES = {
   UNUSED: 'unused',
   USED: 'used',
   CANCELLED: 'cancelled'
-  // Deliberately no 'expired' — vouchers do not expire.
 };
 
 const REFERRAL = {
   SEQUENCE: 'referralNo',
   PREFIX: 'REF-',
-  PAD: 6, // REF-000123
-
-  // The PIN is a bearer credential worth money: whoever holds referralNo + PIN
-  // can create a member. Treated exactly like a password.
-  PIN_LENGTH: 6,
-  MAX_ATTEMPTS: 5,
-  LOCK_MINUTES: 15
+  PAD: 6 // REF-000123
 };
 
 const INVOICE = {
@@ -110,15 +94,15 @@ const SELF_UPDATABLE_FIELDS = [
 ];
 
 // Never updatable through a generic update, by anyone:
-//   password      → dedicated change-password endpoint
+//   password      → change-password endpoint, or the admin's own guarded path
 //   memberCode    → immutable public identity
-//   tier          → fixed for life by the joining voucher
+//   tier          → fixed for life at registration
 //   role          → no self-service role changes
-//   sponsorId/Code→ set once at registration
+//   sponsorId     → set once at registration
 //   ancestors/depth/leftChild/rightChild → maintained by the tree engine
-//   directCount / mustChangePassword     → maintained by the system
-// Placement (parentId + position) is handled by its own guarded code path,
-// admin-only, and is not part of any whitelist.
+//   directCount   → maintained by the system
+// Placement (parentId + position) is handled by its own guarded code path and
+// is not part of any whitelist.
 
 const pickAllowedFields = (source = {}, allowed = []) => {
   const out = {};
@@ -137,7 +121,6 @@ module.exports = {
   TIER_LABELS,
   POSITIONS,
   MEMBER_CODE,
-  SPONSOR_CODE,
   TREE_STATUSES,
   REFERRAL_STATUSES,
   REFERRAL,

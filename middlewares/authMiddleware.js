@@ -7,9 +7,8 @@ const { ROLES, STATUSES } = require('../config/constants');
 // requireAuth — verifies the token and loads the live user.
 //
 // The user is re-read from the database on every request rather than trusted
-// from the token payload, because status, role and mustChangePassword can all
-// change mid-session (an admin suspends someone, a password gets reset) and a
-// stale token must not keep working.
+// from the token payload, because status and role can change mid-session (an
+// admin suspends someone) and a stale token must not keep working.
 // ---------------------------------------------------------------------------
 const requireAuth = async (req, res, next) => {
     const authHeader = req.headers['authorization'];
@@ -35,7 +34,7 @@ const requireAuth = async (req, res, next) => {
     }
 
     const user = await Associate.findById(decoded.sub).select(
-        'memberCode fullName email role status tier mustChangePassword ancestors depth parentId position leftChild rightChild sponsorId'
+        'memberCode fullName email role status tier ancestors depth parentId position leftChild rightChild sponsorId'
     );
 
     if (!user) {
@@ -50,23 +49,6 @@ const requireAuth = async (req, res, next) => {
     }
 
     req.user = user;
-    next();
-};
-
-// ---------------------------------------------------------------------------
-// requirePasswordChanged — blocks everything until a temporary password is
-// replaced. Mount it after requireAuth on every route EXCEPT change-password
-// and logout, otherwise the user is locked out of the very endpoint that
-// would free them.
-// ---------------------------------------------------------------------------
-const requirePasswordChanged = (req, res, next) => {
-    if (req.user.mustChangePassword) {
-        return res.status(428).json({
-            success: false,
-            code: 'PASSWORD_RESET_REQUIRED',
-            message: 'You must set a new password before continuing.'
-        });
-    }
     next();
 };
 
@@ -130,7 +112,6 @@ const requireSelfOrAdmin = (param = 'id') => (req, res, next) => {
 
 module.exports = {
     requireAuth,
-    requirePasswordChanged,
     requireRole,
     scopeToDownline,
     requireSelfOrAdmin,

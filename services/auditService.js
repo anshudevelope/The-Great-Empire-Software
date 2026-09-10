@@ -2,13 +2,17 @@ const AuditLog = require('../models/AuditLog');
 
 const ACTIONS = {
   MEMBER_REGISTERED: 'member.registered',
-  MEMBER_REDEEMED: 'member.redeemed',
+  // A member entering the tree for the first time (by admin or sponsor).
+  MEMBER_PLACED: 'member.placed',
   MEMBER_STATUS_CHANGED: 'member.status_changed',
   MEMBER_MOVED: 'member.moved',
+  MEMBER_SPONSOR_CHANGED: 'member.sponsor_changed',
   MEMBER_DELETED: 'member.deleted',
   REFERRAL_ISSUED: 'referral.issued',
+  REFERRAL_UPDATED: 'referral.updated',
   REFERRAL_CANCELLED: 'referral.cancelled',
-  PASSWORD_CHANGED: 'auth.password_changed'
+  PASSWORD_CHANGED: 'auth.password_changed',
+  PASSWORD_SET_BY_ADMIN: 'auth.password_set_by_admin'
 };
 
 /**

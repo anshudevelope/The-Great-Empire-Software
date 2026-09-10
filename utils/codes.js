@@ -1,25 +1,15 @@
-const crypto = require('crypto');
 const Counter = require('../models/Counter');
-const { MEMBER_CODE, SPONSOR_CODE, REFERRAL, INVOICE } = require('../config/constants');
+const { MEMBER_CODE, REFERRAL, INVOICE } = require('../config/constants');
 
-// TRG0001, TRG0042 … widens past TRG9999 on its own.
+// TGE0001, TGE0042 … widens past TGE9999 on its own.
 const formatMemberCode = (seq) =>
   `${MEMBER_CODE.PREFIX}${String(seq).padStart(MEMBER_CODE.PAD, '0')}`;
 
 // Mints the next member code. The very first associate an admin registers
-// becomes TRG0001 — the tree root. Codes are never reused, even after a delete.
+// becomes the tree root. Codes are never reused, even after a delete.
 const nextMemberCode = async (session = null) => {
   const seq = await Counter.next(MEMBER_CODE.SEQUENCE, session);
   return formatMemberCode(seq);
-};
-
-// SPN0001 — the associate's own Sponsor ID, minted alongside the member code.
-const formatSponsorCode = (seq) =>
-  `${SPONSOR_CODE.PREFIX}${String(seq).padStart(SPONSOR_CODE.PAD, '0')}`;
-
-const nextSponsorCode = async (session = null) => {
-  const seq = await Counter.next(SPONSOR_CODE.SEQUENCE, session);
-  return formatSponsorCode(seq);
 };
 
 // REF-000123
@@ -39,21 +29,10 @@ const nextInvoiceNo = async (session = null, date = new Date()) => {
   return `${INVOICE.PREFIX}${year}-${String(seq).padStart(INVOICE.PAD, '0')}`;
 };
 
-// Cryptographically secure numeric PIN. Math.random() is not acceptable here —
-// this value is worth money and must not be predictable from other PINs.
-const generatePin = (length = REFERRAL.PIN_LENGTH) => {
-  let pin = '';
-  for (let i = 0; i < length; i++) pin += crypto.randomInt(0, 10);
-  return pin;
-};
-
 module.exports = {
   formatMemberCode,
   nextMemberCode,
-  formatSponsorCode,
-  nextSponsorCode,
   formatReferralNo,
   nextReferralNo,
-  nextInvoiceNo,
-  generatePin
+  nextInvoiceNo
 };

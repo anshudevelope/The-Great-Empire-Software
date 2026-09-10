@@ -11,6 +11,7 @@ require('dotenv').config();
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 const Associate = require('../models/Associate');
+const { encrypt } = require('../utils/secretBox');
 const { ROLES, STATUSES } = require('../config/constants');
 
 const run = async () => {
@@ -41,22 +42,21 @@ const run = async () => {
     phone: process.env.ADMIN_PHONE || '0000000000',
     email,
     password: hashed,
+    passwordEnc: encrypt(password),
     role: ROLES.ADMIN,
     status: STATUSES.APPROVED,
     // Outside the tree: no memberCode, no tier, no placement.
     parentId: null,
     position: null,
     ancestors: [],
-    depth: 0,
-    // The .env password is shared/known — force a real one at first login.
-    mustChangePassword: true
+    depth: 0
   });
 
   console.log('\nAdmin created');
   console.log(`  email : ${admin.email}`);
   console.log(`  role  : ${admin.role}`);
-  console.log('\n  This account must change its password at first login.');
-  console.log('  Next: log in and register the first associate — they become TRG0001, the tree root.\n');
+  console.log('\n  The .env password is shared — change it from the admin panel after logging in.');
+  console.log('  Next: log in and register the first associate — they become the tree root.\n');
 
   await mongoose.disconnect();
 };

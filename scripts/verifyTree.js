@@ -23,7 +23,7 @@ const run = async () => {
   console.log('Connected to MongoDB\n');
 
   const all = await Associate.find({ role: ROLES.ASSOCIATE })
-    .select('memberCode sponsorCode sponsorMemberCode treeStatus fullName parentId position leftChild rightChild ancestors depth sponsorId directCount')
+    .select('memberCode sponsorMemberCode treeStatus fullName parentId position leftChild rightChild ancestors depth sponsorId directCount')
     .lean();
 
   if (!all.length) {

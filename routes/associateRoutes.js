@@ -3,7 +3,9 @@ const router = express.Router();
 const { upload } = require('../config/cloudinary');
 const {
   registerAssociate,
-  redeemReferral,
+  getPendingPlacement,
+  getPlacementParents,
+  placeMember,
   getPlacementPreview,
   lookupByCode,
   searchAssociates,
@@ -18,7 +20,6 @@ const {
 const { getBinaryTree } = require('../controllers/treeController');
 const {
   requireAuth,
-  requirePasswordChanged,
   requireRole,
   scopeToDownline,
   requireSelfOrAdmin,
@@ -31,8 +32,7 @@ const cpUpload = upload.fields([
   { name: 'documents', maxCount: 5 }
 ]);
 
-// Every route below requires a valid session with a settled password.
-router.use(requireAuth, requirePasswordChanged);
+router.use(requireAuth);
 
 const adminOnly = requireRole(ROLES.ADMIN);
 
@@ -41,31 +41,32 @@ const adminOnly = requireRole(ROLES.ADMIN);
 // '/placement-preview' as an id and try to load an associate called that.
 // ---------------------------------------------------------------------------
 
-// A sponsor places their referred member in the tree. The referral supplies who
-// the member is; the only input is the leg.
-router.post(
-  '/redeem',
-  rateLimit({ windowMs: 10 * 60_000, max: 20, message: 'Too many placement attempts. Please wait a few minutes.' }),
-  redeemReferral
-);
+// Sponsor side: who is waiting to be placed, and where they can go.
+router.get('/pending-placement', getPendingPlacement);
+router.get('/placement-parents', rateLimit({ windowMs: 60_000, max: 60 }), getPlacementParents);
 
-// "Will be placed under TRG0098 (3 levels below you)"
+// "Will be placed under TGE0098 (3 levels below)"
 router.get('/placement-preview', getPlacementPreview);
 
-// Searchable selects (member, sponsor and receivedBy pickers). Open to
-// associates too, since they can now register members.
-router.get('/search', rateLimit({ windowMs: 60_000, max: 60 }), searchAssociates);
+// Searchable selects on the admin forms — can enumerate the membership.
+router.get('/search', adminOnly, rateLimit({ windowMs: 60_000, max: 60 }), searchAssociates);
 
-// Code validation on the registration form
 router.get('/lookup/:memberCode', rateLimit({ windowMs: 60_000, max: 60 }), lookupByCode);
 
-// Registration is open to admins AND associates. Placement stays optional, and
-// only an admin may set it at creation (enforced in the controller).
-router.post('/register', cpUpload, registerAssociate);
+// Only the admin registers associates. adminOnly runs before the upload so a
+// rejected request never pushes files to Cloudinary.
+router.post('/register', adminOnly, cpUpload, registerAssociate);
 
 router.get('/', adminOnly, getAllAssociates);
 router.patch('/:id/status', adminOnly, updateStatus);
 router.delete('/:id', adminOnly, deleteAssociate);
+
+// A sponsor places a member they referred; the controller checks ownership.
+router.post(
+  '/:id/place',
+  rateLimit({ windowMs: 10 * 60_000, max: 30, message: 'Too many placement attempts. Please wait a few minutes.' }),
+  placeMember
+);
 
 // Reads: admins see everyone, associates see themselves and their downline.
 router.get('/tree/:id', scopeToDownline('id'), getBinaryTree);

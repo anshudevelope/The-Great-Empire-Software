@@ -1,23 +1,24 @@
-const bcrypt = require('bcryptjs');
 const Referral = require('../models/Referral');
 const Associate = require('../models/Associate');
-const { nextReferralNo, nextInvoiceNo, generatePin } = require('../utils/codes');
-const { assertRedeemable } = require('../services/referralService');
+const { nextReferralNo, nextInvoiceNo } = require('../utils/codes');
 const { record, ACTIONS } = require('../services/auditService');
-const { withTransaction } = require('../utils/transaction');
+const { parsePayment, paymentFields } = require('../services/referralService');
 const { placeExisting } = require('../services/placementService');
+const { withTransaction } = require('../utils/transaction');
 const {
   ROLES,
   STATUSES,
-  TIERS,
   TIER_LABELS,
   POSITIONS,
   TREE_STATUSES,
-  REFERRAL_STATUSES,
-  PAYMENT_MODES
+  REFERRAL_STATUSES
 } = require('../config/constants');
 
-// Shape used by both dashboards. Never includes the PIN.
+// Most referrals are raised by POST /api/associates/register when the admin
+// picks a sponsor. POST /api/referrals covers members who were registered
+// without one.
+
+// Shape used by both dashboards.
 const toInvoice = (referral) => ({
   _id: referral._id,
   invoiceNo: referral.invoiceNo,
@@ -28,10 +29,9 @@ const toInvoice = (referral) => ({
   issuedTo: {
     _id: referral.issuedTo?._id || referral.issuedTo,
     name: referral.issuedTo?.fullName || null,
-    memberCode: referral.issuedToCode,
-    sponsorCode: referral.issuedToSponsorCode || referral.issuedTo?.sponsorCode || null
+    memberCode: referral.issuedToCode
   },
-  // The referred member — created before the referral, not by it.
+  // The referred member.
   member: {
     _id: referral.member?._id || referral.member,
     name: referral.member?.fullName || referral.memberName || null,
@@ -41,7 +41,7 @@ const toInvoice = (referral) => ({
   tier: referral.tier,
   tierLabel: TIER_LABELS[referral.tier],
 
-  // Money received FROM the associate. Recorded only — never a payout.
+  // Money received FROM the sponsor. Recorded only — never a payout.
   amountPaid: referral.amountPaid,
   payment: {
     mode: referral.paymentMode || null,
@@ -53,7 +53,6 @@ const toInvoice = (referral) => ({
   },
 
   status: referral.status,
-  pinHint: referral.pinLast2 ? `••••${referral.pinLast2}` : null,
 
   // How the member got into the tree, once they did.
   usedAt: referral.usedAt,
@@ -73,32 +72,21 @@ const toInvoice = (referral) => ({
 
 const populateAll = (query) =>
   query
-    .populate('issuedTo', 'memberCode sponsorCode fullName email phone')
+    .populate('issuedTo', 'memberCode fullName email phone')
     .populate('issuedBy', 'fullName email')
     .populate('member', 'memberCode fullName treeStatus');
 
 // ---------------------------------------------------------------------------
 // POST /api/referrals  (admin)
 //
-// Generates a voucher. This is the ONLY time the plaintext PIN exists outside
-// the admin's screen — it is hashed on save and can never be recovered. If the
-// admin loses it, the voucher must be cancelled and reissued.
+// Gives an already-registered, unsponsored member a sponsor and records what
+// the sponsor paid. No PIN: with a leg the admin places the member under the
+// sponsor now (spillover applies); without one the sponsor places them from
+// their portal, choosing the parent and leg.
 // ---------------------------------------------------------------------------
 exports.createReferral = async (req, res, next) => {
   try {
-    const {
-      member: memberId,
-      issuedTo,
-      amountPaid,
-      notes,
-      paymentMode,
-      paymentRef,
-      receivedOn,
-      receivedBy,
-      // Optional: admin can fill the tree slot right here instead of leaving it
-      // to the sponsor.
-      position
-    } = req.body;
+    const { member: memberId, issuedTo, position } = req.body;
 
     if (!memberId) {
       return res.status(400).json({ success: false, message: 'member (the referred associate) is required.' });
@@ -109,48 +97,14 @@ exports.createReferral = async (req, res, next) => {
     if (String(memberId) === String(issuedTo)) {
       return res.status(400).json({ success: false, message: 'An associate cannot sponsor themselves.' });
     }
-
-    const parsedAmount = Number(amountPaid);
-    if (!Number.isFinite(parsedAmount) || parsedAmount < 0) {
-      return res.status(400).json({ success: false, message: 'amountPaid must be a non-negative number.' });
+    if (position && ![POSITIONS.LEFT, POSITIONS.RIGHT].includes(position)) {
+      return res.status(400).json({ success: false, message: 'position must be "Left" or "Right".' });
     }
 
-    // Payment detail is entirely optional — but if a mode is given it must be
-    // a known one, so the field stays reportable.
-    if (paymentMode && !PAYMENT_MODES.includes(paymentMode)) {
-      return res.status(400).json({
-        success: false,
-        message: `paymentMode must be one of: ${PAYMENT_MODES.join(', ')}.`
-      });
-    }
-
-    let receivedOnDate = new Date();
-    if (receivedOn) {
-      receivedOnDate = new Date(receivedOn);
-      if (Number.isNaN(receivedOnDate.getTime())) {
-        return res.status(400).json({ success: false, message: 'receivedOn is not a valid date.' });
-      }
-    }
-    // `receivedOn` is a DATE, not a timestamp — the form only ever collects a
-    // day. Left un-normalised, a value defaulted to `new Date()` carries a time
-    // and sorts above one entered on the form for the same day (stored at
-    // midnight), so the invoice register ends up in an order that looks random.
-    // Flattening to midnight makes same-day entries tie, letting createdAt
-    // order them newest-first.
-    receivedOnDate.setUTCHours(0, 0, 0, 0);
-
-    // Resolved to a snapshot so the receipt keeps its wording even if this
-    // person is later renamed or removed.
-    let receiver = null;
-    if (receivedBy) {
-      receiver = await Associate.findById(receivedBy).select('memberCode fullName');
-      if (!receiver) {
-        return res.status(404).json({ success: false, message: 'receivedBy: person not found.' });
-      }
-    }
+    const payment = await parsePayment(req.body);
 
     // --- The sponsor (who paid) ------------------------------------------
-    const sponsor = await Associate.findById(issuedTo).select('memberCode sponsorCode fullName role status');
+    const sponsor = await Associate.findById(issuedTo).select('memberCode fullName role status treeStatus');
     if (!sponsor) {
       return res.status(404).json({ success: false, message: 'Sponsor not found.' });
     }
@@ -158,13 +112,17 @@ exports.createReferral = async (req, res, next) => {
       return res.status(400).json({ success: false, message: 'Only an associate can be the sponsor.' });
     }
     if (sponsor.status !== STATUSES.APPROVED) {
+      return res.status(400).json({ success: false, message: `Cannot make a ${sponsor.status} account a sponsor.` });
+    }
+    // A sponsor outside the tree has nowhere to place the member.
+    if (sponsor.treeStatus === TREE_STATUSES.UNPLACED) {
       return res.status(400).json({
         success: false,
-        message: `Cannot make a ${sponsor.status} account a sponsor.`
+        message: `${sponsor.memberCode} is not in the tree yet, so they cannot sponsor anyone.`
       });
     }
 
-    // --- The referred member (created earlier, usually unplaced) ----------
+    // --- The referred member (registered earlier, no sponsor) -------------
     const member = await Associate.findById(memberId).select('memberCode fullName role tier treeStatus sponsorId');
     if (!member) {
       return res.status(404).json({ success: false, message: 'Referred associate not found.' });
@@ -173,10 +131,7 @@ exports.createReferral = async (req, res, next) => {
       return res.status(400).json({ success: false, message: 'Only an associate can be referred.' });
     }
     if (member.sponsorId) {
-      return res.status(400).json({
-        success: false,
-        message: `${member.memberCode} already has a sponsor.`
-      });
+      return res.status(400).json({ success: false, message: `${member.memberCode} already has a sponsor.` });
     }
     if (member.treeStatus !== TREE_STATUSES.UNPLACED) {
       return res.status(400).json({
@@ -197,85 +152,69 @@ exports.createReferral = async (req, res, next) => {
       });
     }
 
-    if (position && ![POSITIONS.LEFT, POSITIONS.RIGHT].includes(position)) {
-      return res.status(400).json({ success: false, message: 'position must be "Left" or "Right".' });
-    }
+    // Minted outside the transaction so a retry reuses them.
+    const referralNo = await nextReferralNo();
+    const invoiceNo = await nextInvoiceNo();
 
-    const pin = generatePin();
-    const referral = await Referral.create({
-      referralNo: await nextReferralNo(),
-      invoiceNo: await nextInvoiceNo(),
-      pinHash: await bcrypt.hash(pin, await bcrypt.genSalt(10)),
-      pinLast2: pin.slice(-2),
-      amountPaid: parsedAmount,
-      paymentMode: paymentMode || null,
-      paymentRef: paymentRef || '',
-      receivedOn: receivedOnDate,
-      receivedBy: receiver ? receiver._id : null,
-      receivedByName: receiver ? receiver.fullName : '',
-      receivedByCode: receiver ? receiver.memberCode || '' : '',
-      // Snapshot from the member — the tier is theirs, fixed at their creation.
-      tier: member.tier,
-      member: member._id,
-      memberCode: member.memberCode,
-      memberName: member.fullName,
-      issuedTo: sponsor._id,
-      issuedToCode: sponsor.memberCode,
-      issuedToSponsorCode: sponsor.sponsorCode || null,
-      issuedBy: req.user._id,
-      notes: notes || ''
-    });
+    const { referral, parent } = await withTransaction(async (session) => {
+      // Conditional on still having no sponsor, so two concurrent requests
+      // can't both claim the same member.
+      const linked = await Associate.findOneAndUpdate(
+        { _id: member._id, sponsorId: null },
+        { sponsorId: sponsor._id, sponsorMemberCode: sponsor.memberCode },
+        { session }
+      );
+      if (!linked) {
+        const err = new Error(`${member.memberCode} already has a sponsor.`);
+        err.status = 409;
+        throw err;
+      }
 
-    // --- Optional: admin places the member straight away -------------------
-    // Offered because the sponsor may not be able to do it themselves. When
-    // skipped, the referral stays 'unused' and the sponsor places the member
-    // with the referral number + PIN.
-    let placement = null;
-    if (position) {
-      try {
-        placement = await withTransaction(async (session) => {
-          const { member: placedMember, parent } = await placeExisting(
-            { memberId: member._id, requestedParentId: sponsor._id, position },
-            session
-          );
+      await Associate.findByIdAndUpdate(sponsor._id, { $inc: { directCount: 1 } }, { session });
 
-          placedMember.sponsorId = sponsor._id;
-          placedMember.sponsorMemberCode = sponsor.memberCode;
-          placedMember.sponsorSponsorCode = sponsor.sponsorCode || null;
-          placedMember.status = STATUSES.APPROVED;
-          await placedMember.save({ session });
+      let placedUnder = null;
+      if (position) {
+        // Spillover starts at the sponsor, so the member lands in their downline.
+        const placed = await placeExisting(
+          {
+            memberId: member._id,
+            requestedParentId: sponsor._id,
+            position,
+            extra: { status: STATUSES.APPROVED }
+          },
+          session
+        );
+        placedUnder = placed.parent;
+      }
 
-          await Referral.findByIdAndUpdate(
-            referral._id,
-            {
+      const [raised] = await Referral.create(
+        [
+          {
+            referralNo,
+            invoiceNo,
+            ...paymentFields(payment),
+            tier: member.tier,
+            member: member._id,
+            memberCode: member.memberCode,
+            memberName: member.fullName,
+            issuedTo: sponsor._id,
+            issuedToCode: sponsor.memberCode,
+            issuedBy: req.user._id,
+            ...(placedUnder && {
               status: REFERRAL_STATUSES.USED,
               usedAt: new Date(),
               placedBy: 'admin',
               placedPosition: position,
-              placedUnderCode: parent.memberCode
-            },
-            { session }
-          );
+              placedUnderCode: placedUnder.memberCode
+            })
+          }
+        ],
+        { session }
+      );
 
-          await Associate.findByIdAndUpdate(sponsor._id, { $inc: { directCount: 1 } }, { session });
+      return { referral: raised, parent: placedUnder };
+    });
 
-          return { placedUnder: parent.memberCode, position, spilledOver: String(parent._id) !== String(sponsor._id) };
-        });
-      } catch (placementError) {
-        // The referral itself is already saved and valid — surface the failure
-        // but don't lose the payment record. The sponsor can still redeem.
-        return res.status(placementError.status || 409).json({
-          success: false,
-          message: `Referral ${referral.referralNo} was created, but placement failed: ${placementError.message}`,
-          pin,
-          data: toInvoice(await populateAll(Referral.findById(referral._id)))
-        });
-      }
-    }
-
-    const populated = await populateAll(Referral.findById(referral._id));
-
-    // Money changed hands — record who issued it and against which payment.
     await record(req, {
       action: ACTIONS.REFERRAL_ISSUED,
       targetType: 'Referral',
@@ -286,22 +225,35 @@ exports.createReferral = async (req, res, next) => {
         member: member.memberCode,
         sponsor: sponsor.memberCode,
         tier: member.tier,
-        amountPaid: parsedAmount,
-        paymentMode: paymentMode || null,
-        paymentRef: paymentRef || '',
-        receivedOn: receivedOnDate,
-        receivedBy: receiver ? receiver.memberCode || receiver.fullName : null,
-        placedByAdmin: Boolean(placement)
+        amountPaid: payment.amountPaid,
+        paymentMode: payment.paymentMode,
+        paymentRef: payment.paymentRef,
+        receivedOn: payment.receivedOn,
+        receivedBy: payment.receiver ? payment.receiver.memberCode || payment.receiver.fullName : null,
+        placedByAdmin: Boolean(parent)
       }
     });
 
+    if (parent) {
+      await record(req, {
+        action: ACTIONS.MEMBER_PLACED,
+        targetType: 'Associate',
+        target: member._id,
+        targetCode: member.memberCode,
+        after: { placedBy: 'admin', placedUnder: parent.memberCode, position }
+      });
+    }
+
+    const populated = await populateAll(Referral.findById(referral._id));
+
     return res.status(201).json({
       success: true,
-      message: placement
-        ? `Referral created and ${member.memberCode} placed under ${placement.placedUnder}.`
-        : 'Referral created. Copy the PIN now — it cannot be shown again. The sponsor uses it to place this member in the tree.',
-      pin, // shown exactly once, never retrievable afterwards
-      placement,
+      message: parent
+        ? `Referral created and ${member.memberCode} placed under ${parent.memberCode} (${position} leg).`
+        : `Referral created. ${sponsor.fullName} can now place ${member.memberCode} from their portal.`,
+      placement: parent
+        ? { placedUnder: parent.memberCode, position, spilledOver: String(parent._id) !== String(sponsor._id) }
+        : null,
       data: toInvoice(populated)
     });
   } catch (error) {
@@ -310,8 +262,8 @@ exports.createReferral = async (req, res, next) => {
 };
 
 // ---------------------------------------------------------------------------
-// GET /api/referrals  (admin)  — all vouchers, filterable
-// GET /api/referrals/mine (associate) — only vouchers issued to the caller
+// GET /api/referrals  (admin)  — all referrals, filterable
+// GET /api/referrals/mine (associate) — only referrals where the caller is sponsor
 // ---------------------------------------------------------------------------
 const listReferrals = async (req, res, next, forcedIssuedTo = null) => {
   try {
@@ -326,10 +278,12 @@ const listReferrals = async (req, res, next, forcedIssuedTo = null) => {
     if (status) filter.status = status;
     if (tier) filter.tier = tier;
     if (search) {
+      const safe = String(search).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       filter.$or = [
-        { referralNo: { $regex: search, $options: 'i' } },
-        { invoiceNo: { $regex: search, $options: 'i' } },
-        { issuedToCode: { $regex: search, $options: 'i' } }
+        { referralNo: { $regex: safe, $options: 'i' } },
+        { invoiceNo: { $regex: safe, $options: 'i' } },
+        { issuedToCode: { $regex: safe, $options: 'i' } },
+        { memberCode: { $regex: safe, $options: 'i' } }
       ];
     }
     if (from || to) {
@@ -338,9 +292,8 @@ const listReferrals = async (req, res, next, forcedIssuedTo = null) => {
       if (to) filter.createdAt.$lte = new Date(to);
     }
 
-    // Vouchers never expire, so an unused one is an open liability that someone
-    // already paid for. Sorting unused oldest-first keeps stale ones visible
-    // instead of buried under recent activity.
+    // Members still waiting for placement sort oldest-first, so the ones left
+    // longest stay visible instead of buried under recent activity.
     const sort = status === REFERRAL_STATUSES.UNUSED ? { createdAt: 1 } : { createdAt: -1 };
 
     const [items, total] = await Promise.all([
@@ -361,7 +314,7 @@ const listReferrals = async (req, res, next, forcedIssuedTo = null) => {
   }
 };
 
-// `forcedIssuedTo` is what scopes an associate to their own vouchers — it must
+// `forcedIssuedTo` is what scopes an associate to their own referrals — it must
 // stay the LAST argument, after `next`, or the scope silently disappears.
 exports.listReferrals = (req, res, next) => listReferrals(req, res, next, null);
 exports.myReferrals = (req, res, next) => listReferrals(req, res, next, req.user._id);
@@ -385,7 +338,7 @@ exports.getSummary = async (req, res, next) => {
       if (row._id === REFERRAL_STATUSES.UNUSED) summary.unusedAmount = row.amount;
     }
 
-    // Unread, unused vouchers drive the "you have a new referral" badge.
+    // Unread, not-yet-placed referrals drive the "new referral" badge.
     summary.unread = await Referral.countDocuments({
       ...match,
       readAt: null,
@@ -399,7 +352,7 @@ exports.getSummary = async (req, res, next) => {
 };
 
 // ---------------------------------------------------------------------------
-// GET /api/referrals/:id/invoice — admin, or the associate it was issued to.
+// GET /api/referrals/:id/invoice — admin, or the sponsor it belongs to.
 // ---------------------------------------------------------------------------
 exports.getInvoice = async (req, res, next) => {
   try {
@@ -418,7 +371,7 @@ exports.getInvoice = async (req, res, next) => {
 };
 
 // ---------------------------------------------------------------------------
-// POST /api/referrals/:id/read — clears the dashboard badge for the recipient.
+// POST /api/referrals/:id/read — clears the dashboard badge for the sponsor.
 // ---------------------------------------------------------------------------
 exports.markRead = async (req, res, next) => {
   try {
@@ -437,60 +390,13 @@ exports.markRead = async (req, res, next) => {
 };
 
 // ---------------------------------------------------------------------------
-// POST /api/referrals/verify  (associate)
-//
-// Checks referralNo + PIN before the associate fills in the registration form.
-// Verification alone changes nothing — the voucher is only consumed at
-// redemption (Phase 3), atomically.
-// ---------------------------------------------------------------------------
-exports.verifyReferral = async (req, res, next) => {
-  try {
-    const { referralNo, pin } = req.body;
-
-    // Shared with the redeem endpoint so the two checks can never drift apart.
-    let referral;
-    try {
-      referral = await assertRedeemable(referralNo, pin, req.user._id);
-    } catch (err) {
-      return res.status(err.status || 400).json({ success: false, message: err.message });
-    }
-
-    return res.status(200).json({
-      success: true,
-      message: 'Referral verified.',
-      data: {
-        referralNo: referral.referralNo,
-        invoiceNo: referral.invoiceNo,
-        tier: referral.tier,
-        tierLabel: TIER_LABELS[referral.tier],
-        amountPaid: referral.amountPaid,
-        // The sponsor is whoever holds this referral — the caller.
-        sponsor: {
-          _id: req.user._id,
-          name: req.user.fullName,
-          memberCode: req.user.memberCode
-        },
-        // Who will be placed. The member already exists, so the placement form
-        // shows them rather than asking for their details again.
-        member: {
-          _id: referral.member,
-          name: referral.memberName || null,
-          memberCode: referral.memberCode
-        }
-      }
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-// ---------------------------------------------------------------------------
-// PATCH /api/referrals/:id/cancel  (admin)
+// PATCH /api/referrals/:id/cancel  (admin) — voids the payment record of a
+// member who has not been placed yet.
 // ---------------------------------------------------------------------------
 exports.cancelReferral = async (req, res, next) => {
   try {
-    // Conditional update: a voucher being redeemed at this moment must not be
-    // cancelled out from under the redemption.
+    // Conditional update: a member being placed at this moment must not have
+    // their referral cancelled out from under the placement.
     const referral = await Referral.findOneAndUpdate(
       { _id: req.params.id, status: REFERRAL_STATUSES.UNUSED },
       {
@@ -507,7 +413,7 @@ exports.cancelReferral = async (req, res, next) => {
       if (!exists) return res.status(404).json({ success: false, message: 'Referral not found.' });
       return res.status(400).json({
         success: false,
-        message: `Only unused referrals can be cancelled — this one is ${exists.status}.`
+        message: `Only referrals whose member is not placed yet can be cancelled — this one is ${exists.status}.`
       });
     }
 

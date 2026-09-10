@@ -9,11 +9,9 @@ const SYMBOLS = '@#$%&*';
 const pick = (charset) => charset[crypto.randomInt(0, charset.length)];
 
 /**
- * Temporary password handed to the sponsor at registration.
- *
- * The new member is flagged mustChangePassword, so this value only survives
- * until their first login — the sponsor never learns the permanent one.
- * Uses crypto.randomInt, not Math.random: these are credentials.
+ * Random password generator (currently unused — the admin sets passwords on
+ * the registration form). Uses crypto.randomInt, not Math.random: these are
+ * credentials.
  */
 const generateTempPassword = (length = 10) => {
   // Guarantee one of each class so the result always clears a policy check.

@@ -10,13 +10,9 @@ const {
   getReferralReport,
   getPending
 } = require('../controllers/reportController');
-const {
-  requireAuth,
-  requirePasswordChanged,
-  scopeToDownline
-} = require('../middlewares/authMiddleware');
+const { requireAuth, scopeToDownline } = require('../middlewares/authMiddleware');
 
-router.use(requireAuth, requirePasswordChanged);
+router.use(requireAuth);
 
 // Two shapes for every member report:
 //   /report        → the caller's own scope (company-wide for an admin)
