@@ -31,7 +31,8 @@ const toInvoice = (referral, billedTo) => {
 
     company,
 
-    // "Received from" on the invoice: the sponsor, who paid for the member.
+    // "Received from" on the invoice: whoever referred (and paid for) the
+    // member. Stays with them even if the sponsor credit was passed on.
     billedTo: {
       memberCode: referral.issuedToCode,
       name: billedTo?.fullName || referral.issuedTo?.fullName || '—',

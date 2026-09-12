@@ -122,9 +122,12 @@ exports.getSponsorTree = async (req, res, next) => {
 
     for (let level = 1; level < depth && frontier.length; level++) {
       const query = { sponsorId: { $in: frontier } };
-      // A non-admin must not see people outside their own downline, even if a
-      // downline member sponsored someone who was later re-placed elsewhere.
-      if (req.user.role !== ROLES.ADMIN) query.ancestors = req.user._id;
+      // A non-admin sees their own downline, plus anyone they sponsor directly —
+      // a referrer can pass the credit to them for a member placed on another
+      // branch, and they must still see who they sponsor.
+      if (req.user.role !== ROLES.ADMIN) {
+        query.$or = [{ ancestors: req.user._id }, { sponsorId: req.user._id }];
+      }
 
       const children = await Associate.find(query).select(NODE_FIELDS).lean();
       if (!children.length) break;
@@ -168,14 +171,11 @@ exports.getDirects = async (req, res, next) => {
     const rootId = req.params.id;
 
     const query = { sponsorId: rootId };
-    if (req.user.role !== ROLES.ADMIN) {
-      // Normally a direct must sit inside the viewer's own tree. The exception
-      // is the viewer's OWN directs who are not placed yet: they have no
-      // ancestors to match, and the sponsor needs to see them to place them.
-      query.$or = [{ ancestors: req.user._id }];
-      if (String(rootId) === String(req.user._id)) {
-        query.$or.push({ treeStatus: TREE_STATUSES.UNPLACED });
-      }
+    // Your OWN directs are everyone you sponsor, wherever they were placed —
+    // the sponsor credit is independent of tree position. Someone else's
+    // directs (a downline member's) stay limited to your own tree.
+    if (req.user.role !== ROLES.ADMIN && String(rootId) !== String(req.user._id)) {
+      query.ancestors = req.user._id;
     }
 
     const directs = await Associate.find(query).select(NODE_FIELDS).sort({ createdAt: 1 }).lean();

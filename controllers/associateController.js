@@ -197,6 +197,10 @@ exports.registerAssociate = async (req, res, next) => {
             // away is live immediately; everyone else waits for placement.
             status: placeNow ? STATUSES.APPROVED : STATUSES.PENDING,
             treeStatus: sponsor ? TREE_STATUSES.UNPLACED : TREE_STATUSES.ROOT,
+            // The admin's pick is both who referred (paid) and, to start
+            // with, the sponsor. Only the sponsor can move later.
+            referredBy: sponsor ? sponsor._id : null,
+            referredByCode: sponsor ? sponsor.memberCode : null,
             sponsorId: sponsor ? sponsor._id : null,
             sponsorMemberCode: sponsor ? sponsor.memberCode : null,
             profileImage,
@@ -307,8 +311,10 @@ exports.getPendingPlacement = async (req, res, next) => {
   try {
     const members = await Associate.find({
       role: ROLES.ASSOCIATE,
-      sponsorId: req.user._id,
-      treeStatus: TREE_STATUSES.UNPLACED
+      treeStatus: TREE_STATUSES.UNPLACED,
+      // The referrer places them. Records from before referredBy existed fall
+      // back to the sponsor, who was the same person.
+      $or: [{ referredBy: req.user._id }, { referredBy: null, sponsorId: req.user._id }]
     })
       .select('memberCode fullName email phone tier status createdAt')
       .sort({ createdAt: 1 })
@@ -386,16 +392,67 @@ exports.getPlacementParents = async (req, res, next) => {
 };
 
 // ---------------------------------------------------------------------------
-// 4. PLACE A MEMBER — the sponsor puts someone they referred into their tree.
+// 3b. SPONSOR OPTIONS — who the referrer may give the sponsor credit to.
 //
-// The sponsor chooses the exact parent (themselves or anyone below them) and
-// the leg. No spillover: they picked that spot, so a taken slot is an error
-// rather than a silent move somewhere else.
+// Associates: themselves or anyone below them, never outside their own team.
+// Unlike placement parents a full node is fine — sponsorship has nothing to do
+// with open legs.
+// ---------------------------------------------------------------------------
+exports.getSponsorOptions = async (req, res, next) => {
+  try {
+    const isAdmin = req.user.role === ROLES.ADMIN;
+    const q = String(req.query.q || '').trim();
+    const limit = Math.min(25, Math.max(1, parseInt(req.query.limit) || 15));
+
+    const clauses = [
+      { role: ROLES.ASSOCIATE },
+      { status: STATUSES.APPROVED },
+      { treeStatus: { $ne: TREE_STATUSES.UNPLACED } }
+    ];
+    if (!isAdmin) {
+      clauses.push({ $or: [{ _id: req.user._id }, { ancestors: req.user._id }] });
+    }
+    if (q) {
+      const rx = { $regex: escapeRegex(q), $options: 'i' };
+      clauses.push({ $or: [{ memberCode: rx }, { fullName: rx }] });
+    }
+
+    const rows = await Associate.find({ $and: clauses })
+      .select('memberCode fullName depth')
+      .sort({ depth: 1, memberCode: 1 })
+      .limit(limit)
+      .lean();
+
+    return res.status(200).json({
+      success: true,
+      count: rows.length,
+      data: rows.map((r) => ({
+        _id: r._id,
+        memberCode: r.memberCode,
+        fullName: r.fullName,
+        isSelf: String(r._id) === String(req.user._id),
+        levelsBelow: isAdmin ? r.depth : r.depth - req.user.depth
+      }))
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// ---------------------------------------------------------------------------
+// 4. PLACE A MEMBER — the referrer puts someone they paid for into their tree.
+//
+// Three choices, all by the referrer:
+//   - parent: themselves or anyone below them, with the leg. No spillover — a
+//     taken slot is an error rather than a silent move somewhere else.
+//   - sponsor (optional): who gets the referral credit — themselves (default)
+//     or anyone below them. Independent of the parent. The referral and its
+//     invoice stay with the referrer either way.
 // ---------------------------------------------------------------------------
 exports.placeMember = async (req, res, next) => {
   try {
     const isAdmin = req.user.role === ROLES.ADMIN;
-    const { parentId, position } = req.body;
+    const { parentId, position, sponsorId } = req.body;
 
     if (!parentId) {
       return res.status(400).json({ success: false, message: 'Choose the parent this member will sit under.' });
@@ -404,10 +461,16 @@ exports.placeMember = async (req, res, next) => {
       return res.status(400).json({ success: false, message: 'Choose the Left or Right leg.' });
     }
 
-    const member = await Associate.findById(req.params.id).select('memberCode fullName role sponsorId treeStatus');
+    const member = await Associate.findById(req.params.id).select(
+      'memberCode fullName role sponsorId sponsorMemberCode referredBy treeStatus'
+    );
+
+    // Placing is the referrer's job — whoever paid for them. Records from before
+    // referredBy existed fall back to the sponsor, who was the same person.
+    const referrerId = member ? String(member.referredBy || member.sponsorId || '') : '';
 
     // Same reply for "doesn't exist" and "not yours", so ids can't be probed.
-    if (!member || member.role !== ROLES.ASSOCIATE || (!isAdmin && String(member.sponsorId) !== String(req.user._id))) {
+    if (!member || member.role !== ROLES.ASSOCIATE || (!isAdmin && referrerId !== String(req.user._id))) {
       return res.status(404).json({ success: false, message: 'Member not found among the associates you referred.' });
     }
     if (member.treeStatus !== TREE_STATUSES.UNPLACED) {
@@ -434,6 +497,43 @@ exports.placeMember = async (req, res, next) => {
       });
     }
 
+    // Sponsor credit — optional. Without a choice it stays with whoever holds it
+    // now (the referrer). It may go to the referrer or anyone below them, never
+    // outside their team, and has nothing to do with where the member sits.
+    const currentSponsorId = member.sponsorId ? String(member.sponsorId) : null;
+    let newSponsor = null;
+    if (sponsorId && String(sponsorId) !== currentSponsorId) {
+      if (String(sponsorId) === String(member._id)) {
+        return res.status(400).json({ success: false, message: 'An associate cannot sponsor themselves.' });
+      }
+      const candidate = await Associate.findById(sponsorId).select('memberCode fullName role status treeStatus ancestors');
+      const inTeam =
+        candidate &&
+        candidate.role === ROLES.ASSOCIATE &&
+        (isAdmin ||
+          String(candidate._id) === String(req.user._id) ||
+          candidate.ancestors.some((a) => String(a) === String(req.user._id)));
+      if (!inTeam) {
+        return res.status(400).json({ success: false, message: 'The sponsor must be you or someone in your own tree.' });
+      }
+      if (candidate.status !== STATUSES.APPROVED) {
+        return res.status(400).json({ success: false, message: `Cannot make a ${candidate.status} account a sponsor.` });
+      }
+      if (candidate.treeStatus === TREE_STATUSES.UNPLACED) {
+        return res.status(400).json({
+          success: false,
+          message: `${candidate.memberCode} is not in the tree yet, so they cannot sponsor anyone.`
+        });
+      }
+      if (await isInSponsorChain(candidate._id, member._id)) {
+        return res.status(400).json({
+          success: false,
+          message: `${candidate.memberCode} was referred through ${member.memberCode}, so they can't become their sponsor.`
+        });
+      }
+      newSponsor = candidate;
+    }
+
     const placedBy = isAdmin ? 'admin' : 'sponsor';
 
     const placed = await withTransaction(async (session) => {
@@ -443,11 +543,22 @@ exports.placeMember = async (req, res, next) => {
           requestedParentId: parent._id,
           position,
           exact: true,
-          // Placement is the approval: the admin vetted and registered them.
-          extra: { status: STATUSES.APPROVED }
+          extra: {
+            // Placement is the approval: the admin vetted and registered them.
+            status: STATUSES.APPROVED,
+            ...(newSponsor && { sponsorId: newSponsor._id, sponsorMemberCode: newSponsor.memberCode })
+          }
         },
         session
       );
+      if (newSponsor) {
+        // The direct moves with the credit.
+        if (currentSponsorId) {
+          await Associate.findByIdAndUpdate(currentSponsorId, { $inc: { directCount: -1 } }, { session });
+        }
+        await Associate.findByIdAndUpdate(newSponsor._id, { $inc: { directCount: 1 } }, { session });
+      }
+      // The referral — and its invoice — stay with the referrer who paid.
       await markReferralPlaced(member._id, { by: placedBy, position, parentCode: parent.memberCode }, session);
       return result;
     });
@@ -457,19 +568,41 @@ exports.placeMember = async (req, res, next) => {
       targetType: 'Associate',
       target: member._id,
       targetCode: member.memberCode,
-      after: { placedBy, placedUnder: parent.memberCode, position, depth: placed.member.depth }
+      after: {
+        placedBy,
+        placedUnder: parent.memberCode,
+        position,
+        depth: placed.member.depth,
+        sponsor: placed.member.sponsorMemberCode
+      }
     });
+
+    if (newSponsor) {
+      // Moves referral credit, so it is recorded like any other sponsor change.
+      await record(req, {
+        action: ACTIONS.MEMBER_SPONSOR_CHANGED,
+        targetType: 'Associate',
+        target: member._id,
+        targetCode: member.memberCode,
+        before: { sponsor: member.sponsorMemberCode || null },
+        after: { sponsor: newSponsor.memberCode },
+        note: 'Chosen by the referrer while placing'
+      });
+    }
 
     return res.status(200).json({
       success: true,
-      message: `${member.memberCode} placed under ${parent.memberCode} (${position} leg).`,
+      message: newSponsor
+        ? `${member.memberCode} placed under ${parent.memberCode} (${position} leg), sponsored by ${newSponsor.memberCode}.`
+        : `${member.memberCode} placed under ${parent.memberCode} (${position} leg).`,
       data: {
         _id: placed.member._id,
         memberCode: placed.member.memberCode,
         fullName: placed.member.fullName,
         position,
         depth: placed.member.depth,
-        placedUnder: { memberCode: parent.memberCode, fullName: parent.fullName }
+        placedUnder: { memberCode: parent.memberCode, fullName: parent.fullName },
+        sponsor: { memberCode: placed.member.sponsorMemberCode }
       }
     });
   } catch (error) {
@@ -600,7 +733,7 @@ exports.searchAssociates = async (req, res, next) => {
 // 8. VIEW ALL ASSOCIATES (admin) — includes each member's password.
 exports.getAllAssociates = async (req, res, next) => {
   try {
-    const { status, tier, search, treeStatus } = req.query;
+    const { status, tier, search, treeStatus, sponsorMismatch } = req.query;
 
     // Admin accounts share this collection but sit outside the tree — they are
     // never part of a member listing.
@@ -610,6 +743,12 @@ exports.getAllAssociates = async (req, res, next) => {
     if (tier) filter.tier = tier;
     if (treeStatus && Object.values(TREE_STATUSES).includes(treeStatus)) {
       filter.treeStatus = treeStatus;
+    }
+    // Admin review: members whose sponsor credit went to someone other than
+    // the person who referred (and paid for) them.
+    if (sponsorMismatch === 'true') {
+      filter.referredBy = { $ne: null };
+      filter.$expr = { $ne: ['$sponsorId', '$referredBy'] };
     }
     if (search) {
       const rx = { $regex: escapeRegex(search), $options: 'i' };
@@ -636,6 +775,7 @@ exports.getAssociateById = async (req, res, next) => {
     const isAdmin = req.user.role === ROLES.ADMIN;
 
     const query = Associate.findById(req.params.id)
+      .populate('referredBy', 'memberCode fullName email phone')
       .populate('sponsorId', 'memberCode fullName email phone')
       .populate('parentId', 'memberCode fullName email phone')
       .populate('leftChild', 'memberCode fullName email phone')
@@ -867,6 +1007,13 @@ exports.updateAssociate = async (req, res, next) => {
       if (newSponsor) {
         updateFields.sponsorId = newSponsor._id;
         updateFields.sponsorMemberCode = newSponsor.memberCode;
+        // Referred by never moves. A record that predates it keeps its original
+        // sponsor as the referrer; one that never had a sponsor gets the admin's
+        // pick as both.
+        if (!associate.referredBy) {
+          updateFields.referredBy = associate.sponsorId || newSponsor._id;
+          updateFields.referredByCode = associate.sponsorId ? associate.sponsorMemberCode : newSponsor.memberCode;
+        }
         if (associate.sponsorId) {
           await Associate.findByIdAndUpdate(associate.sponsorId, { $inc: { directCount: -1 } });
         }
@@ -890,11 +1037,8 @@ exports.updateAssociate = async (req, res, next) => {
           paymentMode: referral.paymentMode,
           paymentRef: referral.paymentRef
         };
-        if (newSponsor) {
-          referral.issuedTo = newSponsor._id;
-          referral.issuedToCode = newSponsor.memberCode;
-          referral.readAt = null; // the new sponsor gets the "new referral" badge
-        }
+        // A sponsor change moves only the credit — the referral and its invoice
+        // stay with the referrer who paid.
         if (payment) {
           Object.assign(referral, paymentFields(payment));
           // Whoever first recorded the payment stays its receiver; older
@@ -938,8 +1082,12 @@ exports.updateAssociate = async (req, res, next) => {
           member: associate._id,
           memberCode: associate.memberCode,
           memberName: updateFields.fullName || associate.fullName,
-          issuedTo: effectiveSponsorId,
-          issuedToCode: newSponsor ? newSponsor.memberCode : associate.sponsorMemberCode,
+          // The invoice belongs to whoever referred (paid), not the sponsor.
+          issuedTo: updateFields.referredBy || associate.referredBy || effectiveSponsorId,
+          issuedToCode:
+            updateFields.referredByCode ||
+            associate.referredByCode ||
+            (newSponsor ? newSponsor.memberCode : associate.sponsorMemberCode),
           issuedBy: req.user._id,
           ...(inTree && {
             status: REFERRAL_STATUSES.USED,

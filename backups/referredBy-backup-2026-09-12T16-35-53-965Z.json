@@ -1,0 +1,68 @@
+[
+  {
+    "_id": "6aa25b9d659bf3e6c2de3521",
+    "memberCode": "TGE0001",
+    "sponsorId": null,
+    "sponsorMemberCode": null
+  },
+  {
+    "_id": "6aa266c3659bf3e6c2de3529",
+    "memberCode": "TGE0003",
+    "sponsorId": "6aa25b9d659bf3e6c2de3521",
+    "sponsorMemberCode": "TGE0001"
+  },
+  {
+    "_id": "6aa26947659bf3e6c2de352f",
+    "memberCode": "TGE0004",
+    "sponsorId": "6aa25b9d659bf3e6c2de3521",
+    "sponsorMemberCode": "TGE0001"
+  },
+  {
+    "_id": "6aa2eab1f076f6a13b8bf42a",
+    "memberCode": "TGE0005",
+    "sponsorId": "6aa26947659bf3e6c2de352f",
+    "sponsorMemberCode": "TGE0004"
+  },
+  {
+    "_id": "6aa531941d423d351b0dbf46",
+    "memberCode": "TGE0007",
+    "sponsorId": "6aa25b9d659bf3e6c2de3521",
+    "sponsorMemberCode": "TGE0001"
+  },
+  {
+    "_id": "6aa5340a1d423d351b0dbf4b",
+    "memberCode": "TGE0008",
+    "sponsorId": "6aa531941d423d351b0dbf46",
+    "sponsorMemberCode": "TGE0007"
+  },
+  {
+    "_id": "6aa536231d423d351b0dbf50",
+    "memberCode": "TGE0009",
+    "sponsorId": "6aa531941d423d351b0dbf46",
+    "sponsorMemberCode": "TGE0007"
+  },
+  {
+    "_id": "6aa538d71d423d351b0dbf55",
+    "memberCode": "TGE0010",
+    "sponsorId": "6aa25b9d659bf3e6c2de3521",
+    "sponsorMemberCode": "TGE0001"
+  },
+  {
+    "_id": "6aa55f9d7ff150a3c97fb61f",
+    "memberCode": "TGE0011",
+    "sponsorId": "6aa25b9d659bf3e6c2de3521",
+    "sponsorMemberCode": "TGE0001"
+  },
+  {
+    "_id": "6aa562937ff150a3c97fb624",
+    "memberCode": "TGE0012",
+    "sponsorId": "6aa25b9d659bf3e6c2de3521",
+    "sponsorMemberCode": "TGE0001"
+  },
+  {
+    "_id": "6aa57676ebd5308e5cdd5201",
+    "memberCode": "TGE0013",
+    "sponsorId": "6aa531941d423d351b0dbf46",
+    "sponsorMemberCode": "TGE0007"
+  }
+]

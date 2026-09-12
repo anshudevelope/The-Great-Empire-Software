@@ -5,6 +5,7 @@ const {
   registerAssociate,
   getPendingPlacement,
   getPlacementParents,
+  getSponsorOptions,
   placeMember,
   getPlacementPreview,
   lookupByCode,
@@ -44,6 +45,8 @@ const adminOnly = requireRole(ROLES.ADMIN);
 // Sponsor side: who is waiting to be placed, and where they can go.
 router.get('/pending-placement', getPendingPlacement);
 router.get('/placement-parents', rateLimit({ windowMs: 60_000, max: 60 }), getPlacementParents);
+// Who the referrer may pass the sponsor credit to: themselves or their downline.
+router.get('/sponsor-options', rateLimit({ windowMs: 60_000, max: 60 }), getSponsorOptions);
 
 // "Will be placed under TGE0098 (3 levels below)"
 router.get('/placement-preview', getPlacementPreview);

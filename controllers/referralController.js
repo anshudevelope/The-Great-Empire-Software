@@ -25,7 +25,8 @@ const toInvoice = (referral) => ({
   referralNo: referral.referralNo,
   issuedAt: referral.createdAt,
   issuedBy: referral.issuedBy?.fullName || null,
-  // The sponsor — who paid for the member and gets the referral credit.
+  // Referred by — who paid for the member. Keeps the referral and invoice even
+  // if the sponsor credit is later passed to someone else.
   issuedTo: {
     _id: referral.issuedTo?._id || referral.issuedTo,
     name: referral.issuedTo?.fullName || null,
@@ -36,7 +37,10 @@ const toInvoice = (referral) => ({
     _id: referral.member?._id || referral.member,
     name: referral.member?.fullName || referral.memberName || null,
     memberCode: referral.memberCode,
-    treeStatus: referral.member?.treeStatus || null
+    treeStatus: referral.member?.treeStatus || null,
+    // Who holds the sponsor credit now — differs from issuedTo when the
+    // referrer passed it on while placing.
+    sponsorMemberCode: referral.member?.sponsorMemberCode || null
   },
   tier: referral.tier,
   tierLabel: TIER_LABELS[referral.tier],
@@ -74,7 +78,7 @@ const populateAll = (query) =>
   query
     .populate('issuedTo', 'memberCode fullName email phone')
     .populate('issuedBy', 'fullName email')
-    .populate('member', 'memberCode fullName treeStatus');
+    .populate('member', 'memberCode fullName treeStatus sponsorMemberCode');
 
 // ---------------------------------------------------------------------------
 // POST /api/referrals  (admin)
@@ -161,7 +165,13 @@ exports.createReferral = async (req, res, next) => {
       // can't both claim the same member.
       const linked = await Associate.findOneAndUpdate(
         { _id: member._id, sponsorId: null },
-        { sponsorId: sponsor._id, sponsorMemberCode: sponsor.memberCode },
+        {
+          // Who paid (fixed) and, to start with, the sponsor.
+          referredBy: sponsor._id,
+          referredByCode: sponsor.memberCode,
+          sponsorId: sponsor._id,
+          sponsorMemberCode: sponsor.memberCode
+        },
         { session }
       );
       if (!linked) {

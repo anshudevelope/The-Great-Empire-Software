@@ -95,12 +95,20 @@ const associateSchema = new mongoose.Schema(
         depth: { type: Number, default: 0 },
 
         // ------------------------------------------------------------------
-        // Sponsor tree (referral) — decides who gets referral credit
+        // Referral credit — two roles, kept apart on purpose
         // ------------------------------------------------------------------
-        // Who referred THIS associate — chosen by the admin at registration.
-        // Differs from parentId whenever the member was placed deeper in the
-        // sponsor's tree. A member has one identity only: memberCode doubles
-        // as the ID they are referred to by.
+        // Referred by: who paid for / enrolled this member. Set by the admin at
+        // registration (or Generate Referral) and never changed afterwards — it
+        // is a payment fact. Their referral and invoice name the same person,
+        // and they are the one who places the member.
+        referredBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Associate', default: null },
+        referredByCode: { type: String, default: null },
+
+        // Sponsor: who gets the referral credit — My Directs, the sponsor tree,
+        // directCount, and any future referral income. Starts as referredBy; the
+        // referrer may pass it once, while placing, to themselves or someone in
+        // their own tree. After that only the admin can change it. Independent
+        // of tree position (parentId). memberCode doubles as the sponsor's ID.
         sponsorId: { type: mongoose.Schema.Types.ObjectId, ref: 'Associate', default: null },
         // Denormalised member code of that sponsor, for fast reports and display.
         sponsorMemberCode: { type: String, default: null },
@@ -136,6 +144,7 @@ associateSchema.index(
 );
 
 associateSchema.index({ ancestors: 1 });   // downline reports + ownership checks
+associateSchema.index({ referredBy: 1 });  // "Place members" — who the caller referred
 associateSchema.index({ sponsorId: 1 });   // "My Directs" / referral reports
 associateSchema.index({ parentId: 1 });
 associateSchema.index({ sponsorMemberCode: 1 });
