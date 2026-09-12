@@ -2,7 +2,7 @@ const Referral = require('../models/Referral');
 const Associate = require('../models/Associate');
 const { nextReferralNo, nextInvoiceNo } = require('../utils/codes');
 const { record, ACTIONS } = require('../services/auditService');
-const { parsePayment, paymentFields } = require('../services/referralService');
+const { parsePayment, paymentFields, receiverFields } = require('../services/referralService');
 const { placeExisting } = require('../services/placementService');
 const { withTransaction } = require('../utils/transaction');
 const {
@@ -193,6 +193,7 @@ exports.createReferral = async (req, res, next) => {
             referralNo,
             invoiceNo,
             ...paymentFields(payment),
+            ...receiverFields(req.user),
             tier: member.tier,
             member: member._id,
             memberCode: member.memberCode,
@@ -229,7 +230,7 @@ exports.createReferral = async (req, res, next) => {
         paymentMode: payment.paymentMode,
         paymentRef: payment.paymentRef,
         receivedOn: payment.receivedOn,
-        receivedBy: payment.receiver ? payment.receiver.memberCode || payment.receiver.fullName : null,
+        receivedBy: req.user.fullName,
         placedByAdmin: Boolean(parent)
       }
     });

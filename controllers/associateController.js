@@ -6,7 +6,7 @@ const { nextMemberCode, nextReferralNo, nextInvoiceNo } = require('../utils/code
 const { withTransaction } = require('../utils/transaction');
 const { encrypt, decrypt } = require('../utils/secretBox');
 const { record, ACTIONS } = require('../services/auditService');
-const { parsePayment, paymentFields, markReferralPlaced } = require('../services/referralService');
+const { parsePayment, paymentFields, receiverFields, markReferralPlaced } = require('../services/referralService');
 const {
   resolveTreeTarget,
   detachFromParent,
@@ -224,6 +224,7 @@ exports.registerAssociate = async (req, res, next) => {
             referralNo,
             invoiceNo,
             ...paymentFields(payment),
+            ...receiverFields(req.user),
             tier,
             member: created._id,
             memberCode,
@@ -275,7 +276,7 @@ exports.registerAssociate = async (req, res, next) => {
           paymentMode: payment.paymentMode,
           paymentRef: payment.paymentRef,
           receivedOn: payment.receivedOn,
-          receivedBy: payment.receiver ? payment.receiver.memberCode || payment.receiver.fullName : null,
+          receivedBy: req.user.fullName,
           placedByAdmin: placeNow
         }
       });
@@ -752,7 +753,7 @@ exports.updateAssociate = async (req, res, next) => {
         ? await parsePayment(req.body)
         : null;
     // Only real input raises a brand-new invoice — the pre-filled date alone doesn't.
-    const paymentHasInput = ['amountPaid', 'paymentMode', 'paymentRef', 'receivedBy', 'notes'].some((key) => req.body[key]);
+    const paymentHasInput = ['amountPaid', 'paymentMode', 'paymentRef', 'notes'].some((key) => req.body[key]);
 
     // Binary tree (re-)placement — admin only, and only when the client
     // explicitly supplies a parent AND a position together. Editing unrelated
@@ -894,7 +895,12 @@ exports.updateAssociate = async (req, res, next) => {
           referral.issuedToCode = newSponsor.memberCode;
           referral.readAt = null; // the new sponsor gets the "new referral" badge
         }
-        if (payment) Object.assign(referral, paymentFields(payment));
+        if (payment) {
+          Object.assign(referral, paymentFields(payment));
+          // Whoever first recorded the payment stays its receiver; older
+          // records without one get the admin making this edit.
+          if (!referral.receivedBy) Object.assign(referral, receiverFields(req.user));
+        }
 
         if (referral.isModified()) {
           await referral.save();
@@ -927,6 +933,7 @@ exports.updateAssociate = async (req, res, next) => {
           referralNo: await nextReferralNo(),
           invoiceNo: await nextInvoiceNo(),
           ...paymentFields(payment || (await parsePayment({}))),
+          ...receiverFields(req.user),
           tier: associate.tier,
           member: associate._id,
           memberCode: associate.memberCode,

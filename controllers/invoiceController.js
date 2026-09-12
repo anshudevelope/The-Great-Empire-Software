@@ -31,6 +31,7 @@ const toInvoice = (referral, billedTo) => {
 
     company,
 
+    // "Received from" on the invoice: the sponsor, who paid for the member.
     billedTo: {
       memberCode: referral.issuedToCode,
       name: billedTo?.fullName || referral.issuedTo?.fullName || '—',
@@ -78,7 +79,9 @@ const toInvoice = (referral, billedTo) => {
       mode: referral.paymentMode || null,
       reference: referral.paymentRef || '',
       receivedOn: referral.receivedOn,
-      receivedBy: referral.receivedByName || null
+      // The invoice is issued in the company's name. The admin who recorded
+      // the payment stays on the referral (receivedByName) for the record.
+      receivedBy: company.name
     },
 
     cancelledAt: referral.cancelledAt,
@@ -120,7 +123,7 @@ exports.listInvoices = async (req, res, next) => {
         [
           { header: 'Invoice No', value: (r) => r.invoiceNo },
           { header: 'Invoice Date', value: (r) => r.receivedOn },
-          { header: 'Billed To', value: (r) => r.issuedToCode },
+          { header: 'Received From', value: (r) => r.issuedToCode },
           { header: 'Transaction', value: (r) => 'Referral' },
           { header: 'Reference', value: (r) => r.referralNo },
           { header: 'Tier', value: (r) => r.tier },
@@ -128,7 +131,7 @@ exports.listInvoices = async (req, res, next) => {
           { header: 'Amount', value: (r) => r.amountPaid },
           { header: 'Payment Mode', value: (r) => r.paymentMode || '' },
           { header: 'Payment Ref', value: (r) => r.paymentRef || '' },
-          { header: 'Received By', value: (r) => r.receivedByName || '' },
+          { header: 'Received By', value: () => company.name },
           { header: 'Status', value: (r) => (r.status === 'cancelled' ? 'Cancelled' : 'Paid') }
         ],
         cursor

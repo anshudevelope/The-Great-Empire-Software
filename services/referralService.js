@@ -1,13 +1,15 @@
-const Associate = require('../models/Associate');
 const Referral = require('../models/Referral');
 const { PAYMENT_MODES, REFERRAL_STATUSES } = require('../config/constants');
 const { httpError } = require('./placementService');
 
 /**
- * Payment recorded against a referral. Shared by registration-with-sponsor and
- * the admin's Generate Referral page so both validate money the same way.
- * Everything is optional — a missing amount is recorded as 0, so the referral
- * and invoice still exist for the sponsor.
+ * Payment recorded against a referral. Shared by registration-with-sponsor, the
+ * admin's Edit page and the Generate Referral page so all three validate money
+ * the same way. Everything is optional — a missing amount is recorded as 0, so
+ * the referral and invoice still exist for the sponsor.
+ *
+ * Who received the money is NOT read from the request: it is always the admin
+ * recording it — see receiverFields().
  */
 const parsePayment = async (body) => {
   const amountGiven = body.amountPaid !== undefined && body.amountPaid !== null && body.amountPaid !== '';
@@ -30,34 +32,31 @@ const parsePayment = async (body) => {
   // entries tie and createdAt orders them in the invoice register.
   receivedOn.setUTCHours(0, 0, 0, 0);
 
-  // Snapshot of who took the money, so the receipt keeps its wording even if
-  // this person is later renamed or removed.
-  let receiver = null;
-  if (body.receivedBy) {
-    receiver = await Associate.findById(body.receivedBy).select('memberCode fullName');
-    if (!receiver) throw httpError('receivedBy: person not found.', 404);
-  }
-
   return {
     amountPaid,
     paymentMode,
     paymentRef: body.paymentRef || '',
     receivedOn,
-    receiver,
     notes: body.notes || ''
   };
 };
 
-// The payment/receiver fields of a Referral document, from parsePayment().
+// The payment fields of a Referral document, from parsePayment().
 const paymentFields = (payment) => ({
   amountPaid: payment.amountPaid,
   paymentMode: payment.paymentMode,
   paymentRef: payment.paymentRef,
   receivedOn: payment.receivedOn,
-  receivedBy: payment.receiver ? payment.receiver._id : null,
-  receivedByName: payment.receiver ? payment.receiver.fullName : '',
-  receivedByCode: payment.receiver ? payment.receiver.memberCode || '' : '',
   notes: payment.notes
+});
+
+// The receiver is always the signed-in admin recording the payment. Stored as a
+// snapshot so the record keeps its wording even if that account is later
+// renamed or removed.
+const receiverFields = (user) => ({
+  receivedBy: user._id,
+  receivedByName: user.fullName || '',
+  receivedByCode: user.memberCode || ''
 });
 
 // Closes the member's referral once they are in the tree. A missing or
@@ -75,4 +74,4 @@ const markReferralPlaced = (memberId, { by, position, parentCode }, session = nu
     { session }
   );
 
-module.exports = { parsePayment, paymentFields, markReferralPlaced };
+module.exports = { parsePayment, paymentFields, receiverFields, markReferralPlaced };
