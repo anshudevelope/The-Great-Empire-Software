@@ -20,8 +20,89 @@ const INVOICE_STATUS = {
   [REFERRAL_STATUSES.CANCELLED]: 'Cancelled'
 };
 
+// const toInvoice = (referral, billedTo) => {
+//   const amount = referral.amountPaid || 0;
+
+//   return {
+//     _id: referral._id,
+//     invoiceNo: referral.invoiceNo,
+//     invoiceDate: referral.receivedOn || referral.createdAt,
+//     status: INVOICE_STATUS[referral.status] || 'Paid',
+
+//     company,
+
+//     // "Received from" on the invoice: whoever referred (and paid for) the
+//     // member. Stays with them even if the sponsor credit was passed on.
+//     billedTo: {
+//       memberCode: referral.issuedToCode,
+//       name: billedTo?.fullName || referral.issuedTo?.fullName || '—',
+//       email: billedTo?.email || '',
+//       phone: billedTo?.phone || '',
+//       address: [billedTo?.address, billedTo?.city, billedTo?.state, billedTo?.pinCode]
+//         .filter(Boolean)
+//         .join(', ')
+//     },
+
+//     transaction: {
+//       type: 'Referral',
+//       referenceNo: referral.referralNo,
+//       issuedAt: referral.createdAt,
+//       // The member this payment was for. Known from the moment the referral is
+//       // raised, since the member is registered before it.
+//       forMember: referral.memberCode
+//         ? {
+//             memberCode: referral.memberCode,
+//             name: referral.member?.fullName || referral.memberName || null,
+//             placedAt: referral.usedAt,
+//             placedUnder: referral.placedUnderCode
+//           }
+//         : null
+//     },
+
+//     items: [
+//       {
+//         description: `Referral — ${referral.tier} (${TIER_LABELS[referral.tier] || ''})`,
+//         reference: referral.referralNo,
+//         quantity: 1,
+//         unitPrice: amount,
+//         amount
+//       }
+//     ],
+
+//     totals: {
+//       subtotal: amount,
+//       total: amount,
+//       amountPaid: referral.status === REFERRAL_STATUSES.CANCELLED ? 0 : amount,
+//       balance: 0
+//     },
+
+//     payment: {
+//       mode: referral.paymentMode || null,
+//       reference: referral.paymentRef || '',
+//       receivedOn: referral.receivedOn,
+//       // The invoice is issued in the company's name. The admin who recorded
+//       // the payment stays on the referral (receivedByName) for the record.
+//       receivedBy: company.name
+//     },
+
+//     cancelledAt: referral.cancelledAt,
+//     cancelReason: referral.cancelReason || '',
+//     notes: referral.notes || ''
+//   };
+// };
+
+// Scope: admins see every invoice, an associate only those billed to them.
+
 const toInvoice = (referral, billedTo) => {
   const amount = referral.amountPaid || 0;
+
+  // Format the member's address if available from populated member object
+  const memberObj = referral.member;
+  const memberAddress = memberObj && typeof memberObj === 'object'
+    ? [memberObj.address, memberObj.city, memberObj.state, memberObj.pinCode]
+      .filter(Boolean)
+      .join(', ')
+    : '';
 
   return {
     _id: referral._id,
@@ -31,8 +112,6 @@ const toInvoice = (referral, billedTo) => {
 
     company,
 
-    // "Received from" on the invoice: whoever referred (and paid for) the
-    // member. Stays with them even if the sponsor credit was passed on.
     billedTo: {
       memberCode: referral.issuedToCode,
       name: billedTo?.fullName || referral.issuedTo?.fullName || '—',
@@ -47,15 +126,16 @@ const toInvoice = (referral, billedTo) => {
       type: 'Referral',
       referenceNo: referral.referralNo,
       issuedAt: referral.createdAt,
-      // The member this payment was for. Known from the moment the referral is
-      // raised, since the member is registered before it.
       forMember: referral.memberCode
         ? {
-            memberCode: referral.memberCode,
-            name: referral.member?.fullName || referral.memberName || null,
-            placedAt: referral.usedAt,
-            placedUnder: referral.placedUnderCode
-          }
+          memberCode: referral.memberCode,
+          name: referral.member?.fullName || referral.memberName || null,
+          phone: referral.member?.phone || null,
+          email: referral.member?.email || null,
+          address: memberAddress || null,
+          placedAt: referral.usedAt,
+          placedUnder: referral.placedUnderCode
+        }
         : null
     },
 
@@ -80,8 +160,6 @@ const toInvoice = (referral, billedTo) => {
       mode: referral.paymentMode || null,
       reference: referral.paymentRef || '',
       receivedOn: referral.receivedOn,
-      // The invoice is issued in the company's name. The admin who recorded
-      // the payment stays on the referral (receivedByName) for the record.
       receivedBy: company.name
     },
 
@@ -91,7 +169,6 @@ const toInvoice = (referral, billedTo) => {
   };
 };
 
-// Scope: admins see every invoice, an associate only those billed to them.
 const scopeFor = (user) => (user.role === ROLES.ADMIN ? {} : { issuedTo: user._id });
 
 // ---------------------------------------------------------------------------
@@ -145,7 +222,7 @@ exports.listInvoices = async (req, res, next) => {
     const [rows, total, totals] = await Promise.all([
       Referral.find(filter)
         .populate('issuedTo', 'memberCode fullName email phone address city state pinCode')
-        .populate('member', 'memberCode fullName')
+        .populate('member', 'memberCode fullName email phone address city state pinCode') // <-- Added contact & address fields
         .sort({ receivedOn: -1, createdAt: -1 })
         .skip((page - 1) * limit)
         .limit(limit),
@@ -191,8 +268,7 @@ exports.getInvoice = async (req, res, next) => {
   try {
     const referral = await Referral.findById(req.params.id)
       .populate('issuedTo', 'memberCode fullName email phone address city state pinCode')
-      .populate('member', 'memberCode fullName');
-
+      .populate('member', 'memberCode fullName email phone address city state pinCode'); // <-- Added contact & address fields
     if (!referral) {
       return res.status(404).json({ success: false, message: 'Invoice not found.' });
     }
