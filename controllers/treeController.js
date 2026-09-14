@@ -5,7 +5,7 @@ const { ROLES, TREE_STATUSES, TIERS } = require('../config/constants');
 const NODE_FIELDS =
   'memberCode fullName email phone status tier position profileImage ' +
   'leftChild rightChild parentId sponsorId sponsorMemberCode treeStatus ancestors depth directCount createdAt ' +
-  'carryLeft carryRight totalLeftVolume totalRightVolume';
+  'carryLeft carryRight totalLeftVolume totalRightVolume directIncome matchingIncome';
 
 /**
  * Member counts per leg, per tier, for a whole set of nodes in ONE aggregation.
@@ -108,7 +108,15 @@ const toNode = (a, parentCode = null, legs = null) => ({
   // Makes the sponsor≠parent split visible in the UI without another lookup.
   isSpillover: Boolean(a.sponsorId && a.parentId && String(a.sponsorId) !== String(a.parentId)),
   // Per-leg carry and volume — the tooltip's business table.
-  business: businessOf(a, legs)
+  business: businessOf(a, legs),
+  // What this member has earned. Read from the cached totals, which the engine
+  // maintains (reversals included) and verify:commissions checks against the
+  // ledger — so it is net of anything taken back.
+  income: {
+    direct: a.directIncome || 0,
+    matching: a.matchingIncome || 0,
+    total: Math.round(((a.directIncome || 0) + (a.matchingIncome || 0)) * 100) / 100
+  }
 });
 
 const parseDepth = (raw, fallback = 3) => {

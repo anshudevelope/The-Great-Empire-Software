@@ -198,7 +198,7 @@ const payMatching = async (member, volume) => {
     const after = await Associate.findOneAndUpdate(
       { _id: ancestor._id },
       { $inc: { [CARRY_FIELD[side]]: volume, [VOLUME_FIELD[side]]: volume } },
-      { new: true, projection: 'memberCode carryLeft carryRight' }
+      { returnDocument: 'after', projection:'memberCode carryLeft carryRight' }
     );
     if (!after) continue; // ancestor vanished mid-run; reconcile will flag it
 
@@ -223,7 +223,7 @@ const payMatching = async (member, volume) => {
         carryRight: { $gte: matched }
       },
       { $inc: { carryLeft: -matched, carryRight: -matched } },
-      { new: true, projection: 'carryLeft carryRight' }
+      { returnDocument: 'after', projection:'carryLeft carryRight' }
     );
     if (!deducted) continue;
 
