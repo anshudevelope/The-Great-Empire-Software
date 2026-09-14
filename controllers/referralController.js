@@ -4,6 +4,7 @@ const { nextReferralNo, nextInvoiceNo } = require('../utils/codes');
 const { record, ACTIONS } = require('../services/auditService');
 const { parsePayment, paymentFields, receiverFields } = require('../services/referralService');
 const { placeExisting } = require('../services/placementService');
+const { settle } = require('../services/commissionService');
 const { withTransaction } = require('../utils/transaction');
 const {
   ROLES,
@@ -225,6 +226,10 @@ exports.createReferral = async (req, res, next) => {
 
       return { referral: raised, parent: placedUnder };
     });
+
+    // Only when the admin placed them here. A referral raised without a leg
+    // leaves the member unplaced; the sponsor's own placement settles it.
+    if (parent) await settle(member._id, 'referral');
 
     await record(req, {
       action: ACTIONS.REFERRAL_ISSUED,

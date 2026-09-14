@@ -1,12 +1,88 @@
 const Associate = require('../models/Associate');
-const { ROLES, TREE_STATUSES } = require('../config/constants');
+const { ROLES, TREE_STATUSES, TIERS } = require('../config/constants');
 
 // Everything a tree node or list row needs to render, and nothing more.
 const NODE_FIELDS =
   'memberCode fullName email phone status tier position profileImage ' +
-  'leftChild rightChild parentId sponsorId sponsorMemberCode treeStatus ancestors depth directCount createdAt';
+  'leftChild rightChild parentId sponsorId sponsorMemberCode treeStatus ancestors depth directCount createdAt ' +
+  'carryLeft carryRight totalLeftVolume totalRightVolume';
 
-const toNode = (a, parentCode = null) => ({
+/**
+ * Member counts per leg, per tier, for a whole set of nodes in ONE aggregation.
+ *
+ * The tooltip's "Tier I / Tier II" rows read "count / amount". Amount already
+ * lives on the node (totalLeftVolume / totalRightVolume, maintained by the
+ * commission engine); the count does not, because it is a property of the
+ * subtree rather than of the member.
+ *
+ * Counting per node would be 2 queries per node — 126 round trips to render a
+ * 5-level tree. Instead every member beneath any relevant leg is matched once,
+ * and $setIntersection assigns them to whichever legs they sit under. A member
+ * at depth 12 legitimately counts toward 12 different ancestors' legs, which is
+ * exactly what the intersection produces.
+ */
+const legCountsFor = async (nodes) => {
+  const childIds = [];
+  for (const n of nodes) {
+    if (n.leftChild) childIds.push(n.leftChild);
+    if (n.rightChild) childIds.push(n.rightChild);
+  }
+  if (!childIds.length) return new Map();
+
+  const rows = await Associate.aggregate([
+    // The leg's own head counts toward it, so match the children themselves
+    // as well as everyone below them.
+    { $match: { $or: [{ _id: { $in: childIds } }, { ancestors: { $in: childIds } }] } },
+    {
+      $project: {
+        tier: 1,
+        legs: { $setIntersection: [{ $concatArrays: [['$_id'], { $ifNull: ['$ancestors', []] }] }, childIds] }
+      }
+    },
+    { $unwind: '$legs' },
+    { $group: { _id: { leg: '$legs', tier: '$tier' }, count: { $sum: 1 } } }
+  ]);
+
+  // leg head id -> { 'Tier I': n, 'Tier II': n }
+  const byLeg = new Map();
+  for (const r of rows) {
+    const key = String(r._id.leg);
+    if (!byLeg.has(key)) byLeg.set(key, {});
+    byLeg.get(key)[r._id.tier] = r.count;
+  }
+
+  const counts = new Map();
+  for (const n of nodes) {
+    const side = (childId) => {
+      const tiers = (childId && byLeg.get(String(childId))) || {};
+      return { tierI: tiers[TIERS.ONE] || 0, tierII: tiers[TIERS.TWO] || 0 };
+    };
+    counts.set(String(n._id), { left: side(n.leftChild), right: side(n.rightChild) });
+  }
+  return counts;
+};
+
+/**
+ * The tooltip's business table.
+ *
+ * Tier II carries real member counts but zero volume: the commission engine
+ * only recognises Tier I today (COMMISSION_RATES in config/constants), so
+ * showing anything else there would be inventing numbers.
+ */
+const businessOf = (a, legs) => ({
+  tierI: {
+    carry: { left: a.carryLeft || 0, right: a.carryRight || 0 },
+    left: { count: legs?.left.tierI || 0, amount: a.totalLeftVolume || 0 },
+    right: { count: legs?.right.tierI || 0, amount: a.totalRightVolume || 0 }
+  },
+  tierII: {
+    carry: { left: 0, right: 0 },
+    left: { count: legs?.left.tierII || 0, amount: 0 },
+    right: { count: legs?.right.tierII || 0, amount: 0 }
+  }
+});
+
+const toNode = (a, parentCode = null, legs = null) => ({
   _id: a._id,
   memberCode: a.memberCode,
   // Shown beside Sponsor in the node tooltip: the two differ whenever
@@ -30,7 +106,9 @@ const toNode = (a, parentCode = null) => ({
   leftChild: a.leftChild || null,
   rightChild: a.rightChild || null,
   // Makes the sponsor≠parent split visible in the UI without another lookup.
-  isSpillover: Boolean(a.sponsorId && a.parentId && String(a.sponsorId) !== String(a.parentId))
+  isSpillover: Boolean(a.sponsorId && a.parentId && String(a.sponsorId) !== String(a.parentId)),
+  // Per-leg carry and volume — the tooltip's business table.
+  business: businessOf(a, legs)
 });
 
 const parseDepth = (raw, fallback = 3) => {
@@ -76,9 +154,12 @@ exports.getBinaryTree = async (req, res, next) => {
       return rootParent && String(rootParent._id) === key ? rootParent.memberCode : null;
     };
 
+    // One aggregation for every visible node's leg counts, before assembly.
+    const legCounts = await legCountsFor(nodes);
+
     const build = (node) => {
       if (!node) return null;
-      const out = toNode(node, parentCodeOf(node));
+      const out = toNode(node, parentCodeOf(node), legCounts.get(String(node._id)));
       const left = node.leftChild && byId.get(String(node.leftChild));
       const right = node.rightChild && byId.get(String(node.rightChild));
       out.left = build(left);
@@ -146,8 +227,11 @@ exports.getSponsorTree = async (req, res, next) => {
       frontier = next;
     }
 
+    const allNodes = [root, ...[...childrenOf.values()].flat()];
+    const legCounts = await legCountsFor(allNodes);
+
     const build = (node) => {
-      const out = toNode(node);
+      const out = toNode(node, null, legCounts.get(String(node._id)));
       out.children = (childrenOf.get(String(node._id)) || []).map(build);
       out.hasMore = out.children.length === 0 && node.directCount > 0;
       return out;
@@ -186,11 +270,13 @@ exports.getDirects = async (req, res, next) => {
     const parents = await Associate.find({ _id: { $in: parentIds } }).select('memberCode fullName').lean();
     const parentById = new Map(parents.map((p) => [String(p._id), p]));
 
+    const legCounts = await legCountsFor(directs);
+
     return res.status(200).json({
       success: true,
       count: directs.length,
       data: directs.map((d) => ({
-        ...toNode(d),
+        ...toNode(d, null, legCounts.get(String(d._id))),
         placedUnder: d.parentId
           ? {
               memberCode: parentById.get(String(d.parentId))?.memberCode || null,
@@ -227,13 +313,16 @@ exports.getUpline = async (req, res, next) => {
     const ancestors = await Associate.find({ _id: { $in: chain } }).select(NODE_FIELDS).lean();
     const byId = new Map(ancestors.map((a) => [String(a._id), a]));
 
+    const legCounts = await legCountsFor([node, ...ancestors]);
+    const withLegs = (a) => toNode(a, null, legCounts.get(String(a._id)));
+
     return res.status(200).json({
       success: true,
       count: chain.length,
       // Ordered top-most first, ending at the direct parent.
       data: {
-        node: toNode(node),
-        upline: chain.map((id) => byId.get(id)).filter(Boolean).map(toNode)
+        node: withLegs(node),
+        upline: chain.map((id) => byId.get(id)).filter(Boolean).map(withLegs)
       }
     });
   } catch (error) {

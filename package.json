@@ -4,13 +4,16 @@
   "description": "",
   "main": "server.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "node --test \"tests/**/*.test.js\"",
     "dev": "nodemon server.js",
     "build": "echo 'No build step required for backend'",
     "start": "node server.js",
     "seed:admin": "node scripts/seedAdmin.js",
     "migrate": "node scripts/migrate.js",
     "verify:tree": "node scripts/verifyTree.js",
+    "verify:commissions": "node scripts/verifyCommissions.js",
+    "backfill:commissions": "node scripts/backfillCommissions.js",
+    "reconcile:commissions": "node scripts/reconcileCommissions.js",
     "sync:indexes": "node scripts/syncIndexes.js",
     "recode": "node scripts/recodeMembers.js"
   },

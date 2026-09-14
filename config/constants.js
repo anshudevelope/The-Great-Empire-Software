@@ -20,6 +20,27 @@ const TIER_LABELS = {
 
 const POSITIONS = { LEFT: 'Left', RIGHT: 'Right' };
 
+// ---------------------------------------------------------------------------
+// Commission
+// ---------------------------------------------------------------------------
+const COMMISSION_TYPES = {
+  DIRECT: 'direct',     // 10% to the sponsor, one level, on the member's amountPaid
+  MATCHING: 'matching', // 5% of min(carryLeft, carryRight) at every ancestor
+  REVERSAL: 'reversal'  // negative row undoing an earlier one; never an edit
+};
+
+// Rates live here, never inline. Changing a rate must NOT retroactively alter
+// historical rows — which is why every ledger entry freezes the rate it used
+// into basis.rate. This table is only ever read for NEW rows.
+const COMMISSION_RATES = {
+  [TIERS.ONE]: { direct: 0.10, matching: 0.05 },
+  [TIERS.TWO]: { direct: 0, matching: 0 } // Tier II generates no volume yet
+};
+
+// Which leg a member sits on maps to the carry/volume field of an ancestor.
+const CARRY_FIELD = { [POSITIONS.LEFT]: 'carryLeft', [POSITIONS.RIGHT]: 'carryRight' };
+const VOLUME_FIELD = { [POSITIONS.LEFT]: 'totalLeftVolume', [POSITIONS.RIGHT]: 'totalRightVolume' };
+
 const MEMBER_CODE = {
   SEQUENCE: 'memberCode',
   PREFIX: 'TGE',
@@ -101,6 +122,13 @@ const SELF_UPDATABLE_FIELDS = [
 //   sponsorId     → set once at registration
 //   ancestors/depth/leftChild/rightChild → maintained by the tree engine
 //   directCount   → maintained by the system
+//   carryLeft/carryRight                 → maintained by commissionService via
+//                                          atomic $inc only. A whitelisted write
+//                                          here would let carry be set by hand,
+//                                          which mints matching income.
+//   totalLeftVolume/totalRightVolume/directIncome/matchingIncome
+//                 → denormalised caches of the ledger; rebuilt by
+//                   scripts/verifyCommissions.js, never assigned by a request
 // Placement (parentId + position) is handled by its own guarded code path and
 // is not part of any whitelist.
 
@@ -120,6 +148,10 @@ module.exports = {
   TIERS,
   TIER_LABELS,
   POSITIONS,
+  COMMISSION_TYPES,
+  COMMISSION_RATES,
+  CARRY_FIELD,
+  VOLUME_FIELD,
   MEMBER_CODE,
   TREE_STATUSES,
   REFERRAL_STATUSES,

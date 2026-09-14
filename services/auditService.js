@@ -11,6 +11,7 @@ const ACTIONS = {
   REFERRAL_ISSUED: 'referral.issued',
   REFERRAL_UPDATED: 'referral.updated',
   REFERRAL_CANCELLED: 'referral.cancelled',
+  COMMISSION_REVERSED: 'commission.reversed',
   PASSWORD_CHANGED: 'auth.password_changed',
   PASSWORD_SET_BY_ADMIN: 'auth.password_set_by_admin'
 };

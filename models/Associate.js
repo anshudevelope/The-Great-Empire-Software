@@ -114,6 +114,32 @@ const associateSchema = new mongoose.Schema(
         sponsorMemberCode: { type: String, default: null },
         directCount: { type: Number, default: 0 },
 
+        // ------------------------------------------------------------------
+        // Commission — carry and denormalised totals
+        // ------------------------------------------------------------------
+        // Unmatched business volume per leg, in rupees. Matching pays 5% of
+        // min(carryLeft, carryRight) and deducts that amount from BOTH sides;
+        // whatever is left over stays here and waits for a counterpart. Never
+        // flushed, never expired.
+        //
+        // Maintained ONLY by commissionService, and only through atomic $inc —
+        // read-then-assign loses updates when two members are placed on
+        // opposite legs at the same instant. Excluded from every update
+        // whitelist: a hand-set carry mints matching income out of nothing.
+        carryLeft: { type: Number, default: 0, min: 0 },
+        carryRight: { type: Number, default: 0, min: 0 },
+
+        // Lifetime figures, denormalised so a dashboard is one document read
+        // rather than an aggregation across the whole ledger.
+        //
+        // These are a CACHE. CommissionLedger is the source of truth —
+        // scripts/verifyCommissions.js recomputes these from it and reports
+        // drift, the same way verifyTree.js does for ancestors/depth.
+        totalLeftVolume: { type: Number, default: 0 },
+        totalRightVolume: { type: Number, default: 0 },
+        directIncome: { type: Number, default: 0 },
+        matchingIncome: { type: Number, default: 0 },
+
         // Media Uploads
         profileImage: {
             url: { type: String, default: '' },

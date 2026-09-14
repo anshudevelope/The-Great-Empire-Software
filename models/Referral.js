@@ -23,7 +23,12 @@ const referralSchema = new mongoose.Schema(
     invoiceNo: { type: String, required: true, unique: true, uppercase: true, trim: true },
 
     // Money the SPONSOR PAID TO THE COMPANY for this member, collected offline.
-    // Recorded only — nothing computes a reward, commission or payout from it.
+    //
+    // This is the COMMISSION BASE. services/commissionService reads it for both
+    // the 10% direct bonus and the volume added to each ancestor's leg, so it is
+    // whatever was actually received — a part payment pays a proportionally
+    // smaller bonus and contributes proportionally less volume. It is not
+    // validated against the tier's nominal price.
     amountPaid: { type: Number, required: true, min: 0 },
 
     // --- Payment detail: all optional -------------------------------------

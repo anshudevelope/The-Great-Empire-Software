@@ -22,11 +22,40 @@ app.use((req, _res, next) => {
   next();
 });
 
+/**
+ * Transactions need a replica set or a sharded cluster. A bare local `mongod`
+ * has neither, and utils/transaction.js deliberately falls back to running
+ * WITHOUT a session there so a developer machine still works.
+ *
+ * That fallback is fine for tree writes — the conditional slot claim still
+ * prevents an overwrite. It is not fine for the commission ledger, where it
+ * silently removes cross-document atomicity in the one environment nobody
+ * thinks to check. Nobody deploys to production on a standalone mongod on
+ * purpose, so fail loudly at boot rather than discovering it in a payout run.
+ */
+const assertTransactionSupport = async (conn) => {
+  const { setName, msg } = await conn.connection.db.admin().command({ hello: 1 });
+  const supported = Boolean(setName) || msg === 'isdbgrid';
+
+  if (supported) return;
+
+  const warning =
+    'MongoDB is a standalone server — transactions are unavailable. ' +
+    'Commission writes stay individually atomic, but placement and payout will not commit together.';
+
+  if (process.env.NODE_ENV === 'production') {
+    console.error(`FATAL: ${warning} Refusing to start. Use a replica set.`);
+    process.exit(1);
+  }
+  console.warn(`WARNING: ${warning}`);
+};
+
 // Database Connection
 const connectDB = async () => {
   try {
     const conn = await mongoose.connect(process.env.MONGO_URI);
     console.log(`MongoDB Connected: ${conn.connection.host}`);
+    await assertTransactionSupport(conn);
   } catch (error) {
     console.error(`Error connecting to MongoDB: ${error.message}`);
     process.exit(1);
@@ -43,6 +72,7 @@ const treeRoutes = require('./routes/treeRoutes');
 const reportRoutes = require('./routes/reportRoutes');
 const invoiceRoutes = require('./routes/invoiceRoutes');
 const companyRoutes = require('./routes/companyRoutes');
+const commissionRoutes = require('./routes/commissionRoutes');
 
 // API Endpoint Mounting
 app.use('/api/associates', associateRoutes);
@@ -52,6 +82,7 @@ app.use('/api/tree', treeRoutes);
 app.use('/api/reports', reportRoutes);
 app.use('/api/invoices', invoiceRoutes);
 app.use('/api/company', companyRoutes);
+app.use('/api/commissions', commissionRoutes);
 
 // Health Check Route
 app.get('/', (req, res) => {
