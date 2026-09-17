@@ -73,6 +73,8 @@ const reportRoutes = require('./routes/reportRoutes');
 const invoiceRoutes = require('./routes/invoiceRoutes');
 const companyRoutes = require('./routes/companyRoutes');
 const commissionRoutes = require('./routes/commissionRoutes');
+const payoutRoutes = require('./routes/payoutRoutes');
+const settingsRoutes = require('./routes/settingsRoutes');
 
 // API Endpoint Mounting
 app.use('/api/associates', associateRoutes);
@@ -83,6 +85,8 @@ app.use('/api/reports', reportRoutes);
 app.use('/api/invoices', invoiceRoutes);
 app.use('/api/company', companyRoutes);
 app.use('/api/commissions', commissionRoutes);
+app.use('/api/payouts', payoutRoutes);
+app.use('/api/settings', settingsRoutes);
 
 // Health Check Route
 app.get('/', (req, res) => {

@@ -19,6 +19,17 @@ const mongoose = require('mongoose');
 const Associate = require('../models/Associate');
 const Referral = require('../models/Referral');
 const Counter = require('../models/Counter');
+const CommissionLedger = require('../models/CommissionLedger');
+const PayoutBatch = require('../models/PayoutBatch');
+const PayoutLine = require('../models/PayoutLine');
+const Setting = require('../models/Setting');
+
+// Every model with a declared index belongs here. A model left out keeps
+// whatever indexes mongoose's autoIndex happened to build at runtime — which
+// races against the first write and, for a constraint that must hold before
+// that write (PayoutBatch's one-draft rule, CommissionLedger's idempotency
+// key), means the guarantee silently does not exist.
+const MODELS = [Associate, Referral, Counter, CommissionLedger, PayoutBatch, PayoutLine, Setting];
 
 const describe = (i) =>
   `${i.name} ${JSON.stringify(i.key)}` +
@@ -29,7 +40,7 @@ const run = async () => {
   await mongoose.connect(process.env.MONGO_URI);
   console.log('Connected to MongoDB\n');
 
-  for (const model of [Associate, Referral, Counter]) {
+  for (const model of MODELS) {
     const name = model.collection.collectionName;
     console.log(`=== ${name} ===`);
 

@@ -12,6 +12,14 @@ const ACTIONS = {
   REFERRAL_UPDATED: 'referral.updated',
   REFERRAL_CANCELLED: 'referral.cancelled',
   COMMISSION_REVERSED: 'commission.reversed',
+  // Closing the books. PAYOUT_FINALIZED is the single most consequential action
+  // in the system: it pays everyone, resets their income, and destroys carry
+  // that cannot be reconstructed.
+  PAYOUT_GENERATED: 'payout.generated',
+  PAYOUT_FINALIZED: 'payout.finalized',
+  PAYOUT_CANCELLED: 'payout.cancelled',
+  PAYOUT_DISCARDED: 'payout.discarded',
+  SETTINGS_UPDATED: 'settings.updated',
   PASSWORD_CHANGED: 'auth.password_changed',
   PASSWORD_SET_BY_ADMIN: 'auth.password_set_by_admin'
 };

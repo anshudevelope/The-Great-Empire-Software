@@ -1,5 +1,5 @@
 const Counter = require('../models/Counter');
-const { MEMBER_CODE, REFERRAL, INVOICE } = require('../config/constants');
+const { MEMBER_CODE, REFERRAL, INVOICE, PAYOUT } = require('../config/constants');
 
 // TGE0001, TGE0042 … widens past TGE9999 on its own.
 const formatMemberCode = (seq) =>
@@ -29,10 +29,23 @@ const nextInvoiceNo = async (session = null, date = new Date()) => {
   return `${INVOICE.PREFIX}${year}-${String(seq).padStart(INVOICE.PAD, '0')}`;
 };
 
+// PAY-000123. Not restarted per year, unlike invoices: a payout batch is an
+// internal register entry, and a continuous sequence makes "which closing was
+// that?" answerable from the number alone.
+const formatPayoutNo = (seq) =>
+  `${PAYOUT.PREFIX}${String(seq).padStart(PAYOUT.PAD, '0')}`;
+
+const nextPayoutNo = async (session = null) => {
+  const seq = await Counter.next(PAYOUT.SEQUENCE, session);
+  return formatPayoutNo(seq);
+};
+
 module.exports = {
   formatMemberCode,
   nextMemberCode,
   formatReferralNo,
   nextReferralNo,
-  nextInvoiceNo
+  nextInvoiceNo,
+  formatPayoutNo,
+  nextPayoutNo
 };

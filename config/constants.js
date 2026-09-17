@@ -41,6 +41,52 @@ const COMMISSION_RATES = {
 const CARRY_FIELD = { [POSITIONS.LEFT]: 'carryLeft', [POSITIONS.RIGHT]: 'carryRight' };
 const VOLUME_FIELD = { [POSITIONS.LEFT]: 'totalLeftVolume', [POSITIONS.RIGHT]: 'totalRightVolume' };
 
+// ---------------------------------------------------------------------------
+// Payout / closing
+// ---------------------------------------------------------------------------
+// A batch is built as a DRAFT (nothing committed, fully discardable), then
+// FINALIZED in one guarded step that stamps the ledger and zeroes the members.
+// CANCELLED undoes a finalized batch from the snapshots stored on its lines.
+const PAYOUT_STATUSES = {
+  DRAFT: 'draft',
+  FINALIZED: 'finalized',
+  CANCELLED: 'cancelled'
+};
+
+const PAYOUT = {
+  SEQUENCE: 'payoutNo',
+  PREFIX: 'PAY-',
+  PAD: 6 // PAY-000123
+};
+
+// Runtime settings, stored in the Setting collection rather than
+// data/company.json: rates must be changeable without a redeploy, and every
+// change has to be auditable. These are only the fallbacks used when a key has
+// never been written.
+//
+// Rates here are read ONCE per batch and frozen onto it — changing a value
+// never moves a payout that has already been generated.
+const SETTING_KEYS = {
+  ADMIN_CHARGE_PCT: 'payout.adminChargePct',
+  SECONDARY_CHARGE_PCT: 'payout.secondaryChargePct',
+  SECONDARY_CHARGE_LABEL: 'payout.secondaryChargeLabel',
+  FLUSH_CARRY_ON_CLOSE: 'payout.flushCarryOnClose',
+  MINIMUM_PAYABLE: 'payout.minimumPayable',
+  INCLUDE_ZERO_INCOME: 'payout.includeZeroIncomeMembers'
+};
+
+const SETTING_DEFAULTS = {
+  [SETTING_KEYS.ADMIN_CHARGE_PCT]: 0.05,
+  [SETTING_KEYS.SECONDARY_CHARGE_PCT]: 0.05,
+  [SETTING_KEYS.SECONDARY_CHARGE_LABEL]: 'TDS',
+  // Destructive, and deliberately a setting rather than a constant: flushed
+  // carry cannot be reconstructed from the ledger, so this must be switchable
+  // before the first closing runs. See PAYOUT-ENGINE-PLAN.md §0.1.
+  [SETTING_KEYS.FLUSH_CARRY_ON_CLOSE]: true,
+  [SETTING_KEYS.MINIMUM_PAYABLE]: 0,
+  [SETTING_KEYS.INCLUDE_ZERO_INCOME]: false
+};
+
 const MEMBER_CODE = {
   SEQUENCE: 'memberCode',
   PREFIX: 'TGE',
@@ -152,6 +198,10 @@ module.exports = {
   COMMISSION_RATES,
   CARRY_FIELD,
   VOLUME_FIELD,
+  PAYOUT_STATUSES,
+  PAYOUT,
+  SETTING_KEYS,
+  SETTING_DEFAULTS,
   MEMBER_CODE,
   TREE_STATUSES,
   REFERRAL_STATUSES,

@@ -58,7 +58,17 @@ const run = async () => {
   console.log(`Checking ${members.length} associates against the ledger…\n`);
 
   // --- 1. Income caches match the ledger -----------------------------------
+  //
+  // UNPAID rows only. Since the payout engine landed, directIncome and
+  // matchingIncome mean "earned this period, not yet paid out" rather than
+  // lifetime: finalizing a batch stamps its rows with payoutBatch and rebuilds
+  // these fields from whatever is left. Aggregating every row here would report
+  // drift on every single member the moment the first payout closes.
+  //
+  // Lifetime figures are still available — they are the same aggregation
+  // without this $match.
   const totals = await CommissionLedger.aggregate([
+    { $match: { payoutBatch: null } },
     { $group: { _id: { beneficiary: '$beneficiary', type: '$type' }, total: { $sum: '$amount' } } }
   ]);
 

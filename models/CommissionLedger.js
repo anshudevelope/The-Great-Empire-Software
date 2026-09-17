@@ -74,6 +74,19 @@ const commissionLedgerSchema = new mongoose.Schema(
       depthFromSource: { type: Number, default: null }
     },
 
+    // ------------------------------------------------------------------
+    // Payout state
+    // ------------------------------------------------------------------
+    // null = earned but not yet paid ("current period"). Set once, when a
+    // payout batch is finalized; cleared only by cancelling that batch.
+    //
+    // A row belongs to at most ONE batch, which is what makes paying the same
+    // commission twice structurally impossible rather than something the code
+    // has to remember to check. It is also how "everyone starts from zero"
+    // works without deleting anything: current income is simply the sum of
+    // rows where this is still null.
+    payoutBatch: { type: mongoose.Schema.Types.ObjectId, ref: 'PayoutBatch', default: null },
+
     reversalOf: { type: mongoose.Schema.Types.ObjectId, ref: 'CommissionLedger', default: null },
     note: { type: String, default: '' }
   },
@@ -91,5 +104,9 @@ commissionLedgerSchema.index({ idempotencyKey: 1 }, { unique: true });
 commissionLedgerSchema.index({ beneficiary: 1, createdAt: -1 }); // member ledger page
 commissionLedgerSchema.index({ sourceMember: 1 });               // "what did this member generate?"
 commissionLedgerSchema.index({ type: 1, createdAt: -1 });        // admin filters + liability totals
+
+// The aggregation every payout batch runs: unpaid rows, grouped by member.
+// Compound so the unpaid filter and the grouping are served by one index.
+commissionLedgerSchema.index({ payoutBatch: 1, beneficiary: 1 });
 
 module.exports = mongoose.model('CommissionLedger', commissionLedgerSchema);
