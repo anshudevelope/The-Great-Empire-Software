@@ -16,11 +16,16 @@ const MAX_LIMIT = 200;
  * string — a report route that lets the client choose whose ledger to read is
  * exactly how a member ends up reading someone else's income.
  */
-const buildFilter = ({ type, from, to, sourceMember }) => {
+const buildFilter = ({ type, from, to, sourceMember, period }) => {
   const filter = {};
 
   if (type && Object.values(COMMISSION_TYPES).includes(type)) filter.type = type;
   if (sourceMember && mongoose.isValidObjectId(sourceMember)) filter.sourceMember = sourceMember;
+
+  // 'current' = earned since the last closing and not yet paid — what the
+  // portal calls realtime income. Anything else returns the full history.
+  // Defaults to the full history so existing callers keep their behaviour.
+  if (period === 'current') filter.payoutBatch = null;
 
   if (from || to) {
     filter.createdAt = {};
@@ -49,10 +54,21 @@ const parsePaging = (query) => {
  * Totals for one member, computed FROM THE LEDGER rather than read from the
  * denormalised fields on Associate. Those fields are a cache; this is the
  * number that has to be defensible in a dispute.
+ *
+ * `unpaidOnly` is not optional in practice. Since the payout engine landed,
+ * directIncome / matchingIncome on Associate mean "earned this period, not yet
+ * paid" — finalizing a batch stamps its rows and rebuilds those fields from
+ * whatever is left. Totalling every row ever would compare a current-period
+ * cache against a lifetime ledger: the portal would show lifetime income under
+ * the heading "realtime", it would never reset at a closing, and cacheDrift
+ * would report a discrepancy that isn't there.
  */
-const ledgerTotals = async (beneficiaryId) => {
+const ledgerTotals = async (beneficiaryId, { unpaidOnly = false } = {}) => {
+  const match = { beneficiary: new mongoose.Types.ObjectId(String(beneficiaryId)) };
+  if (unpaidOnly) match.payoutBatch = null;
+
   const rows = await CommissionLedger.aggregate([
-    { $match: { beneficiary: new mongoose.Types.ObjectId(String(beneficiaryId)) } },
+    { $match: match },
     { $group: { _id: '$type', total: { $sum: '$amount' }, count: { $sum: 1 } } }
   ]);
 
@@ -101,7 +117,10 @@ exports.getMySummary = async (req, res, next) => {
       .select('memberCode carryLeft carryRight totalLeftVolume totalRightVolume directIncome matchingIncome')
       .lean();
 
-    const totals = await ledgerTotals(req.user._id);
+    // The headline figures are CURRENT PERIOD — this is "realtime income", and
+    // it has to fall to zero when a payout closes.
+    const totals = await ledgerTotals(req.user._id, { unpaidOnly: true });
+    const lifetime = await ledgerTotals(req.user._id);
 
     // Carry is what the next pairing will draw on: whichever leg is weaker is
     // the ceiling on the next match.
@@ -112,6 +131,9 @@ exports.getMySummary = async (req, res, next) => {
       data: {
         memberCode: me.memberCode,
         ...totals,
+        // Everything ever earned, paid batches included. Separate field so the
+        // two can never be confused for one another.
+        lifetime,
         carry: {
           left: me.carryLeft,
           right: me.carryRight,
@@ -121,7 +143,8 @@ exports.getMySummary = async (req, res, next) => {
         },
         volume: { left: me.totalLeftVolume, right: me.totalRightVolume },
         // Surfaced so drift between the cache and the ledger is visible rather
-        // than silently trusted. Should always be zero.
+        // than silently trusted. Compared against the UNPAID totals, because
+        // that is what the cache now holds. Should always be zero.
         cacheDrift: {
           direct: Math.round((me.directIncome - totals.directIncome) * 100) / 100,
           matching: Math.round((me.matchingIncome - totals.matchingIncome) * 100) / 100
@@ -157,7 +180,8 @@ exports.getMemberSummary = async (req, res, next) => {
       .lean();
     if (!member) return res.status(404).json({ success: false, message: 'Associate not found.' });
 
-    const totals = await ledgerTotals(member._id);
+    const totals = await ledgerTotals(member._id, { unpaidOnly: true });
+    const lifetime = await ledgerTotals(member._id);
 
     res.status(200).json({
       success: true,
@@ -165,6 +189,7 @@ exports.getMemberSummary = async (req, res, next) => {
         memberCode: member.memberCode,
         fullName: member.fullName,
         ...totals,
+        lifetime,
         carry: { left: member.carryLeft, right: member.carryRight },
         volume: { left: member.totalLeftVolume, right: member.totalRightVolume }
       }
