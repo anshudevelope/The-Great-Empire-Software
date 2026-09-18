@@ -128,7 +128,7 @@ const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const jwtConfig = require('../config/jwt');
 const Associate = require('../models/Associate');
-const { STATUSES } = require('../config/constants');
+const { ROLES, STATUSES } = require('../config/constants');
 const { encrypt } = require('../utils/secretBox');
 const { record, ACTIONS } = require('../services/auditService');
 
@@ -141,19 +141,34 @@ const signToken = (user) =>
         { expiresIn: jwtConfig.expiresIn }
     );
 
+// The two front doors. Each one only lets its own role through, so the admin
+// console and the member portal are genuinely separate logins rather than one
+// login that redirects you afterwards.
+const AUDIENCES = [ROLES.ADMIN, ROLES.ASSOCIATE];
+
 // ---------------------------------------------------------------------------
-// POST /api/auth/login — Accepts either Email OR Member Code (Associate ID)
+// POST /api/auth/login — Accepts either Email OR Member Code (Associate ID).
+//
+// `audience` names which door the request came through and is part of the
+// credential check: correct password, wrong door, is a failed login.
 // ---------------------------------------------------------------------------
 const login = async (req, res, next) => {
     try {
         // Accept 'identifier' (or fallback to 'email' / 'memberCode' for flexible payload support)
-        const { identifier, email, memberCode, password } = req.body;
+        const { identifier, email, memberCode, password, audience } = req.body;
         const loginId = (identifier || email || memberCode || '').toString().trim();
 
         if (!loginId || !password) {
             return res.status(400).json({
                 success: false,
                 message: 'Email or Associate ID, and password are required.'
+            });
+        }
+
+        if (!AUDIENCES.includes(audience)) {
+            return res.status(400).json({
+                success: false,
+                message: 'A valid audience is required.'
             });
         }
 
@@ -171,6 +186,11 @@ const login = async (req, res, next) => {
 
         const passwordMatches = await bcrypt.compare(password, user.password);
         if (!passwordMatches) return res.status(401).json(invalid);
+
+        // Deliberately the same reply as a wrong password. Saying "this is an
+        // associate account" would confirm the account exists and leak its role
+        // to anyone probing the admin door.
+        if (user.role !== audience) return res.status(401).json(invalid);
 
         if (user.status !== STATUSES.APPROVED) {
             return res.status(403).json({

@@ -12,12 +12,16 @@ const loginLimiter = rateLimit({
   message: 'Too many login attempts. Please try again later.'
 });
 
-// Canonical login for both roles — the token identifies which user.
+// Canonical login. The body's `audience` says which door the request came
+// through, and a role that doesn't match it fails like a wrong password.
 router.post('/login', loginLimiter, login);
 
-// Legacy alias kept so the existing admin frontend keeps working until it
-// moves to /auth/login in the frontend phase.
-router.post('/admin/login', loginLimiter, login);
+// Legacy alias for old admin bookmarks. The audience is pinned here rather
+// than read from the body — this path is the admin door by definition.
+router.post('/admin/login', loginLimiter, (req, res, next) => {
+  req.body = { ...req.body, audience: 'admin' };
+  return login(req, res, next);
+});
 
 router.post('/change-password', requireAuth, changePassword);
 router.get('/me', requireAuth, me);
