@@ -141,6 +141,10 @@ const INVOICE = {
 // afterwards — but `amountPaid` itself is always required.
 const PAYMENT_MODES = ['Cash', 'UPI', 'Bank Transfer', 'Cheque', 'Card', 'Other'];
 
+// How many accounts may share one phone number. Lets one person run a few IDs
+// from a single number. Email stays unique — it is the login identity.
+const MAX_ASSOCIATES_PER_PHONE = 3;
+
 // ---------------------------------------------------------------------------
 // Update whitelists — never spread req.body into an update.
 //
@@ -214,6 +218,7 @@ module.exports = {
   REFERRAL,
   INVOICE,
   PAYMENT_MODES,
+  MAX_ASSOCIATES_PER_PHONE,
   ADMIN_UPDATABLE_FIELDS,
   SELF_UPDATABLE_FIELDS,
   pickAllowedFields

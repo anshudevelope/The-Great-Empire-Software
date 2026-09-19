@@ -9,7 +9,9 @@ const associateSchema = new mongoose.Schema(
         fatherOrHusbandName: { type: String, default: '', trim: true },
         maritalStatus: { type: String, enum: ['Single', 'Married', 'Divorced', 'Widowed'], default: 'Single' },
         gender: { type: String, enum: ['Male', 'Female', 'Other'], required: true },
-        phone: { type: String, required: true, unique: true, trim: true },
+        // Not unique: up to MAX_ASSOCIATES_PER_PHONE accounts may share a number.
+        // The cap is enforced in associateController, not by an index.
+        phone: { type: String, required: true, trim: true },
         email: { type: String, required: true, unique: true, lowercase: true, trim: true },
 
         // select:false keeps the hash out of every ordinary query. Login must
@@ -173,6 +175,7 @@ associateSchema.index({ ancestors: 1 });   // downline reports + ownership check
 associateSchema.index({ referredBy: 1 });  // "Place members" — who the caller referred
 associateSchema.index({ sponsorId: 1 });   // "My Directs" / referral reports
 associateSchema.index({ parentId: 1 });
+associateSchema.index({ phone: 1 });      // per-phone account cap
 associateSchema.index({ sponsorMemberCode: 1 });
 associateSchema.index({ status: 1 });
 associateSchema.index({ role: 1 });

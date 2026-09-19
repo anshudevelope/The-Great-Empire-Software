@@ -27,6 +27,7 @@ const {
   POSITIONS,
   TREE_STATUSES,
   REFERRAL_STATUSES,
+  MAX_ASSOCIATES_PER_PHONE,
   ADMIN_UPDATABLE_FIELDS,
   SELF_UPDATABLE_FIELDS,
   pickAllowedFields
@@ -62,9 +63,25 @@ const collectUploads = (req) => {
   return { profileImage, documents };
 };
 
+// A phone may be shared by up to MAX_ASSOCIATES_PER_PHONE accounts. `excludeId`
+// leaves the member being edited out of the count, so re-saving their own
+// number never trips the cap.
+const assertPhoneAvailable = async (phone, excludeId = null) => {
+  const filter = { phone: String(phone).trim() };
+  if (excludeId) filter._id = { $ne: excludeId };
+  const count = await Associate.countDocuments(filter);
+  if (count >= MAX_ASSOCIATES_PER_PHONE) {
+    throw httpError(
+      `This phone number is already used by ${MAX_ASSOCIATES_PER_PHONE} associates — the maximum allowed.`,
+      400
+    );
+  }
+};
+
 const assertUniqueContact = async ({ email, phone }) => {
-  const existing = await Associate.findOne({ $or: [{ email }, { phone }] }).select('_id');
-  if (existing) throw httpError('Email or Phone already registered.', 400);
+  const existing = await Associate.findOne({ email: String(email).toLowerCase().trim() }).select('_id');
+  if (existing) throw httpError('Email already registered.', 400);
+  await assertPhoneAvailable(phone);
 };
 
 const escapeRegex = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -856,6 +873,10 @@ exports.updateAssociate = async (req, res, next) => {
       }
       Object.assign(updateFields, await passwordFields(req.body.password));
       passwordSet = true;
+    }
+
+    if (updateFields.phone && String(updateFields.phone).trim() !== associate.phone) {
+      await assertPhoneAvailable(updateFields.phone, associate._id);
     }
 
     // Sponsor change — admin only, and only when a DIFFERENT sponsor is sent.
