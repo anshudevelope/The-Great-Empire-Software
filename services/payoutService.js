@@ -223,7 +223,7 @@ const buildLines = async ({ periodEnd, rates }) => {
     .sort({ memberCode: 1 })
     .lean();
 
-  return members.map((m) => {
+  const lines = members.map((m) => {
     const raw = byMember.get(String(m._id)) || {};
     const computed = computeLine(
       { ...raw, openingAdjustment: opening.get(String(m._id)) || 0 },
@@ -243,6 +243,25 @@ const buildLines = async ({ periodEnd, rates }) => {
       ledgerRowCount: raw.ledgerRowCount || 0
     };
   });
+
+  if (rates.includeZeroIncomeMembers) return lines;
+
+  // Nothing to pay, nothing to record — drop the line entirely.
+  //
+  // Being in the "earned" set is not the same as having earned anything. A
+  // member placed without a referral carries a deliberate zero-value marker row
+  // (see commissionService.onPlacement), and a member whose bonus was reversed
+  // nets to zero from two real rows. Both would otherwise appear on the payout
+  // sheet and in the CSV as ₹0.00 lines that no one can act on.
+  //
+  // The exception is a flush: carryBefore is the only record of what a closing
+  // destroyed, so a member holding carry keeps their line even with no income,
+  // or cancelling the batch could not put that carry back.
+  return lines.filter(
+    (line) =>
+      line.total !== 0 ||
+      (rates.flushCarryOnClose && (line.carryBefore.left > 0 || line.carryBefore.right > 0))
+  );
 };
 
 /**

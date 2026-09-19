@@ -79,10 +79,16 @@ const SETTING_DEFAULTS = {
   [SETTING_KEYS.ADMIN_CHARGE_PCT]: 0.05,
   [SETTING_KEYS.SECONDARY_CHARGE_PCT]: 0.05,
   [SETTING_KEYS.SECONDARY_CHARGE_LABEL]: 'TDS',
-  // Destructive, and deliberately a setting rather than a constant: flushed
-  // carry cannot be reconstructed from the ledger, so this must be switchable
-  // before the first closing runs. See PAYOUT-ENGINE-PLAN.md §0.1.
-  [SETTING_KEYS.FLUSH_CARRY_ON_CLOSE]: true,
+  // OFF: unmatched carry survives a closing and pairs up in a later period,
+  // exactly like volume that never got matched within one period. Only the
+  // MONEY resets at a closing; the business does not.
+  //
+  // Kept as a setting rather than removed, because the opposite behaviour is
+  // common in binary plans and the client may still want it. Turning it on is
+  // one-way in practice: flushed carry is a running balance that depends on the
+  // order members were placed in, so it cannot be reconstructed from the ledger.
+  // See PAYOUT-ENGINE-PLAN.md §0.1.
+  [SETTING_KEYS.FLUSH_CARRY_ON_CLOSE]: false,
   [SETTING_KEYS.MINIMUM_PAYABLE]: 0,
   [SETTING_KEYS.INCLUDE_ZERO_INCOME]: false
 };
