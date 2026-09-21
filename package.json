@@ -16,6 +16,7 @@
     "reconcile:commissions": "node scripts/reconcileCommissions.js",
     "verify:payouts": "node scripts/verifyPayouts.js",
     "seed:test": "node scripts/seedTestAssociates.js",
+    "seed:periods": "node scripts/seedPayoutPeriods.js",
     "sync:indexes": "node scripts/syncIndexes.js",
     "recode": "node scripts/recodeMembers.js"
   },

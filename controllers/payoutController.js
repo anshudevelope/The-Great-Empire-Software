@@ -68,11 +68,33 @@ exports.getDraft = async (req, res, next) => {
     if (!batch) {
       // Not an error — "no draft open" is the normal state. Include what the
       // next batch would cover so the page can show its date range.
-      const [periodStart, rates] = await Promise.all([
+      const [periodStart, rates, last] = await Promise.all([
         payoutService.resolvePeriodStart(),
-        payoutService.currentRates()
+        payoutService.currentRates(),
+        // The last closing, so the page can warn when a hand-picked start date
+        // reaches back into a period that has already been paid.
+        PayoutBatch.findOne({ status: PAYOUT_STATUSES.FINALIZED })
+          .sort({ periodEnd: -1 })
+          .select('batchNo periodStart periodEnd finalizedAt')
+          .lean()
       ]);
-      return res.status(200).json({ success: true, data: null, next: { periodStart, rates } });
+
+      return res.status(200).json({
+        success: true,
+        data: null,
+        next: {
+          periodStart,
+          rates,
+          previous: last
+            ? {
+                batchNo: last.batchNo,
+                periodStart: last.periodStart,
+                periodEnd: last.periodEnd,
+                finalizedAt: last.finalizedAt
+              }
+            : null
+        }
+      });
     }
 
     res.status(200).json({ success: true, data: batch });
