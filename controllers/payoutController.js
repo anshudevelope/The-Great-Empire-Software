@@ -90,6 +90,7 @@ exports.getDraft = async (req, res, next) => {
 exports.createDraft = async (req, res, next) => {
   try {
     const batch = await payoutService.generateDraft({
+      periodStart: req.body.periodStart,
       periodEnd: req.body.periodEnd,
       actor: req.user,
       note: req.body.note || ''

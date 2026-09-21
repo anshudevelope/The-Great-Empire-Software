@@ -329,11 +329,23 @@ const recacheIncome = async (memberIds, session = null) => {
  * ledger row is stamped and no member is touched, so a draft is completely
  * discardable.
  */
-const generateDraft = async ({ periodEnd, actor, note = '' }) => {
+const generateDraft = async ({ periodStart, periodEnd, actor, note = '' }) => {
   const rates = await currentRates();
-  const periodStart = await resolvePeriodStart();
+
+  // The start date LABELS the period; it never selects anything. Rows are
+  // chosen by `payoutBatch: null` plus the close date, so moving the start
+  // cannot pull in already-paid commission, skip unpaid commission, or create
+  // an overlap that pays twice. The admin may set it; when they don't, it is
+  // the day after the last closing.
+  const defaultStart = await resolvePeriodStart();
+  const start = periodStart ? new Date(periodStart) : defaultStart;
   const cutoff = periodEnd ? new Date(periodEnd) : new Date();
 
+  if (Number.isNaN(start.getTime())) {
+    const err = new Error('Start date is not a valid date.');
+    err.status = 400;
+    throw err;
+  }
   if (Number.isNaN(cutoff.getTime())) {
     const err = new Error('Close date is not a valid date.');
     err.status = 400;
@@ -360,7 +372,7 @@ const generateDraft = async ({ periodEnd, actor, note = '' }) => {
     [batch] = await PayoutBatch.create([
       {
         batchNo,
-        periodStart,
+        periodStart: start,
         periodEnd: cutoff,
         status: PAYOUT_STATUSES.DRAFT,
         rates: {
