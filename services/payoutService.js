@@ -133,17 +133,28 @@ const currentRates = async () => {
 };
 
 /**
- * Where this period begins: where the last finalized one ended.
+ * Where this period begins: the day AFTER the last finalized one ended.
+ *
+ * Periods read as inclusive date ranges, so a payout closed on the 22nd is
+ * followed by one starting on the 23rd. Returning the previous end unchanged
+ * would print the same date as both the end of one period and the start of the
+ * next, which reads like an overlap.
+ *
+ * This value is metadata: row selection is driven by `payoutBatch: null` plus
+ * the close date, never by the period start, so nothing earned in the gap can
+ * be missed — an unpaid row stays unpaid until some batch's close date covers it.
  *
  * On a first run there is no previous batch, so fall back to the oldest unpaid
  * ledger row — and to now if the ledger is empty.
  */
+const DAY_MS = 24 * 60 * 60 * 1000;
+
 const resolvePeriodStart = async () => {
   const last = await PayoutBatch.findOne({ status: PAYOUT_STATUSES.FINALIZED })
     .sort({ periodEnd: -1 })
     .select('periodEnd')
     .lean();
-  if (last) return last.periodEnd;
+  if (last) return new Date(last.periodEnd.getTime() + DAY_MS);
 
   const oldest = await CommissionLedger.findOne({ payoutBatch: null })
     .sort({ createdAt: 1 })
@@ -328,13 +339,12 @@ const generateDraft = async ({ periodEnd, actor, note = '' }) => {
     err.status = 400;
     throw err;
   }
-  if (cutoff <= periodStart) {
-    const err = new Error(
-      `Close date must be after the previous closing (${periodStart.toISOString()}).`
-    );
-    err.status = 400;
-    throw err;
-  }
+
+  // The close date is deliberately unconstrained — future or past is the
+  // admin's call. It cannot cause a double payment either way: rows are
+  // selected by `payoutBatch: null`, so anything already paid is invisible to
+  // this batch no matter what date is chosen. A date that covers nothing falls
+  // through to the "nothing to pay out" check below.
 
   const lines = await buildLines({ periodEnd: cutoff, rates });
   if (!lines.length) {
