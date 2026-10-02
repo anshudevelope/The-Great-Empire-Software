@@ -58,6 +58,10 @@ const payoutBatchSchema = new mongoose.Schema(
       adminCharge: { type: Number, default: 0 },
       secondaryCharge: { type: Number, default: 0 },
       netPayable: { type: Number, default: 0 },
+      // Registration money behind this period's commission — the full
+      // amountPaid, not the rated share. Lets the payout be read as a
+      // percentage of turnover rather than as a bare figure.
+      business: { type: Number, default: 0 },
       // Volume destroyed by the flush. Recorded because it cannot be recovered
       // and because it is the number the client should be looking at.
       carryFlushed: { type: Number, default: 0 },

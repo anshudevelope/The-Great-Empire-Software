@@ -46,8 +46,13 @@ const toInvoice = (referral) => ({
   tier: referral.tier,
   tierLabel: TIER_LABELS[referral.tier],
 
-  // Money received FROM the sponsor. Recorded only — never a payout.
+  // Money received FROM the sponsor — the business amount, and what the
+  // receipt shows. Never reduced by the rating.
   amountPaid: referral.amountPaid,
+  // Share of it that earns commission, and the resulting figure. Legacy
+  // referrals predate both and behave as 100%.
+  rating: referral.rating ?? 100,
+  commissionBase: referral.commissionBase ?? referral.amountPaid,
   payment: {
     mode: referral.paymentMode || null,
     reference: referral.paymentRef || '',

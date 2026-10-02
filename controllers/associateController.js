@@ -832,6 +832,8 @@ exports.getAssociateById = async (req, res, next) => {
               invoiceNo: referral.invoiceNo,
               status: referral.status,
               amountPaid: referral.amountPaid,
+              rating: referral.rating ?? 100,
+              commissionBase: referral.commissionBase ?? referral.amountPaid,
               paymentMode: referral.paymentMode || null,
               paymentRef: referral.paymentRef || '',
               receivedOn: referral.receivedOn || null,
@@ -1081,6 +1083,7 @@ exports.updateAssociate = async (req, res, next) => {
         const before = {
           issuedToCode: referral.issuedToCode,
           amountPaid: referral.amountPaid,
+          rating: referral.rating,
           paymentMode: referral.paymentMode,
           paymentRef: referral.paymentRef
         };
@@ -1104,6 +1107,7 @@ exports.updateAssociate = async (req, res, next) => {
             after: {
               issuedToCode: referral.issuedToCode,
               amountPaid: referral.amountPaid,
+              rating: referral.rating,
               paymentMode: referral.paymentMode,
               paymentRef: referral.paymentRef
             }

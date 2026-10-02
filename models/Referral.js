@@ -24,12 +24,36 @@ const referralSchema = new mongoose.Schema(
 
     // Money the SPONSOR PAID TO THE COMPANY for this member, collected offline.
     //
-    // This is the COMMISSION BASE. services/commissionService reads it for both
-    // the 10% direct bonus and the volume added to each ancestor's leg, so it is
-    // whatever was actually received — a part payment pays a proportionally
-    // smaller bonus and contributes proportionally less volume. It is not
-    // validated against the tier's nominal price.
+    // This is the BUSINESS amount: it backs the receipt, and it is what counts
+    // toward each upline's leg volume. It is not validated against the tier's
+    // nominal price.
     amountPaid: { type: Number, required: true, min: 0 },
+
+    // How much of `amountPaid` earns commission, as a percentage.
+    //
+    // At 70 on a 1,00,000 registration, every commission — the 10% direct and
+    // the volume that feeds binary matching — is computed on 70,000. The other
+    // 30,000 is not lost: it still counts as business, so leg volume and the
+    // receipt both show the full 1,00,000. Only the earning half is reduced.
+    //
+    // Defaults to 100 so a referral without one behaves exactly as before; the
+    // engine also reads it as `rating ?? 100`, so records written before this
+    // field existed need no migration.
+    rating: { type: Number, default: 100, min: 0, max: 100 },
+
+    // amountPaid × rating, resolved and frozen at the moment the payment is
+    // recorded. Derivable in principle, stored in practice:
+    //
+    //   - rounding happens once, here, so nothing downstream can re-derive it
+    //     to a different paisa;
+    //   - a member who is never placed has no ledger row, so this is the only
+    //     place the commissionable figure would otherwise exist;
+    //   - reports can sum it directly instead of recomputing per row.
+    //
+    // Derived by the hook below rather than by any caller, so a direct
+    // Referral.create() — the seed scripts do exactly that — cannot leave it
+    // at zero and silently wipe out the commission.
+    commissionBase: { type: Number, default: 0, min: 0 },
 
     // --- Payment detail: all optional -------------------------------------
     paymentMode: { type: String, enum: [...PAYMENT_MODES, null], default: null },
@@ -87,6 +111,21 @@ const referralSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+// ---------------------------------------------------------------------------
+// commissionBase is always amountPaid × rating — never a caller's arithmetic.
+//
+// A hook rather than a helper the callers remember to use: every create and
+// every save passes through here, including the seed scripts that build
+// referrals by hand. Rounding happens once, at this single point.
+//
+// It does NOT fire on updateOne/findOneAndUpdate, which is why the payment edit
+// path assigns onto the document and calls save().
+// ---------------------------------------------------------------------------
+referralSchema.pre('validate', function setCommissionBase() {
+  const rating = this.rating ?? 100;
+  this.commissionBase = Math.round((this.amountPaid || 0) * (rating / 100) * 100) / 100;
+});
 
 referralSchema.index({ issuedTo: 1, status: 1 });
 referralSchema.index({ createdAt: -1 });

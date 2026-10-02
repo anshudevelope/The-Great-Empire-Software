@@ -18,6 +18,14 @@ const parsePayment = async (body) => {
     throw httpError('Amount paid must be a non-negative number.', 400);
   }
 
+  // Share of the payment that earns commission. Absent means 100 — the whole
+  // amount — which is how every referral behaved before this existed.
+  const ratingGiven = body.rating !== undefined && body.rating !== null && body.rating !== '';
+  const rating = ratingGiven ? Number(body.rating) : 100;
+  if (!Number.isFinite(rating) || rating < 0 || rating > 100) {
+    throw httpError('Rating must be a percentage between 0 and 100.', 400);
+  }
+
   const paymentMode = body.paymentMode || null;
   if (paymentMode && !PAYMENT_MODES.includes(paymentMode)) {
     throw httpError(`paymentMode must be one of: ${PAYMENT_MODES.join(', ')}.`, 400);
@@ -34,6 +42,7 @@ const parsePayment = async (body) => {
 
   return {
     amountPaid,
+    rating,
     paymentMode,
     paymentRef: body.paymentRef || '',
     receivedOn,
@@ -42,8 +51,11 @@ const parsePayment = async (body) => {
 };
 
 // The payment fields of a Referral document, from parsePayment().
+// commissionBase is deliberately absent: the Referral schema derives it from
+// these two on every validate, so there is exactly one place it is computed.
 const paymentFields = (payment) => ({
   amountPaid: payment.amountPaid,
+  rating: payment.rating,
   paymentMode: payment.paymentMode,
   paymentRef: payment.paymentRef,
   receivedOn: payment.receivedOn,

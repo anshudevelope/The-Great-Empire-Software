@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 const Associate = require('../models/Associate');
 const CommissionLedger = require('../models/CommissionLedger');
+const Referral = require('../models/Referral');
 const PayoutBatch = require('../models/PayoutBatch');
 const PayoutLine = require('../models/PayoutLine');
 const Setting = require('../models/Setting');
@@ -11,7 +12,8 @@ const {
   PAYOUT_STATUSES,
   SETTING_KEYS,
   ROLES,
-  STATUSES
+  STATUSES,
+  REFERRAL_STATUSES
 } = require('../config/constants');
 
 // Rupees, 2dp. Applied per line, never to a batch total — see summarise().
@@ -178,6 +180,36 @@ const openingAdjustments = async () => {
     .lean();
 
   return new Map(held.map((l) => [String(l.member), l.total]));
+};
+
+/**
+ * Turnover behind a period: the full amountPaid of every registration whose
+ * commission falls in it.
+ *
+ * Deliberately `amountPaid`, not `commissionBase` — a rated registration is
+ * still business for its whole value, which is the point of the rating. So a
+ * 1,00,000 at 70% counts 1,00,000 here while only earning on 70,000.
+ *
+ * Must run BEFORE the rows are stamped, since it finds them by `payoutBatch: null`.
+ */
+const periodBusiness = async (periodEnd) => {
+  const sourceIds = await CommissionLedger.distinct('sourceMember', {
+    payoutBatch: null,
+    createdAt: { $lte: periodEnd }
+  });
+  if (!sourceIds.length) return 0;
+
+  const rows = await Referral.aggregate([
+    {
+      $match: {
+        member: { $in: sourceIds },
+        status: { $in: [REFERRAL_STATUSES.UNUSED, REFERRAL_STATUSES.USED] }
+      }
+    },
+    { $group: { _id: null, total: { $sum: '$amountPaid' } } }
+  ]);
+
+  return round2(rows[0]?.total || 0);
 };
 
 /**
@@ -365,6 +397,7 @@ const generateDraft = async ({ periodStart, periodEnd, actor, note = '' }) => {
     throw err;
   }
 
+  const business = await periodBusiness(cutoff);
   const batchNo = await nextPayoutNo();
 
   let batch;
@@ -382,7 +415,7 @@ const generateDraft = async ({ periodStart, periodEnd, actor, note = '' }) => {
           flushCarryOnClose: rates.flushCarryOnClose,
           minimumPayable: rates.minimumPayable
         },
-        totals: summarise(lines),
+        totals: { ...summarise(lines), business },
         generatedBy: actor._id,
         generatedByCode: actor.memberCode || '',
         note
@@ -446,6 +479,8 @@ const finalizeBatch = async (batchId, actor) => {
     // MONEY is recomputed from the ledger — the draft is a view, the ledger is
     // the truth, and a late settle() may have landed a row inside the period.
     const lines = await buildLines({ periodEnd: batch.periodEnd, rates: batch.rates });
+    // Before the stamping below, which is what this counts by.
+    const business = await periodBusiness(batch.periodEnd);
 
     // CARRY is not recomputed. It keeps the approved snapshot so that the
     // number on the preview is the number destroyed, and so that volume from a
@@ -500,6 +535,7 @@ const finalizeBatch = async (batchId, actor) => {
     // summarise() projects carryFlushed from carryBefore, which is right for a
     // draft. Now that the flush has run, replace it with what was really taken.
     const totals = summarise(lines);
+    totals.business = business;
     totals.carryFlushed = round2(
       lines.reduce((sum, l) => sum + l.carryFlushed.left + l.carryFlushed.right, 0)
     );

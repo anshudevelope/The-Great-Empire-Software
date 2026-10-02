@@ -59,7 +59,15 @@ const commissionLedgerSchema = new mongoose.Schema(
     // ------------------------------------------------------------------
     basis: {
       rate: { type: Number, required: true }, // 0.10 direct | 0.05 matching
-      base: { type: Number, required: true }, // amountPaid, or the matched volume
+      base: { type: Number, required: true }, // the rated amount, or the matched volume
+
+      // The referral's rating at the time, on DIRECT rows only. Frozen here so
+      // a row still explains itself if the referral is edited afterwards.
+      //
+      // Null on matching rows on purpose: matched carry can aggregate volume
+      // from several members at different ratings, so one percentage could not
+      // describe it honestly.
+      rating: { type: Number, default: null },
 
       // Matching only: which leg the source member landed on relative to THIS
       // beneficiary, and the carry either side of the match. These four make a

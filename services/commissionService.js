@@ -140,7 +140,12 @@ const payDirect = async (member, referral) => {
   if (!referral) return null;
 
   const rate = ratesFor(member.tier).direct;
-  const base = referral.amountPaid || 0;
+  // Commission is earned on the rated share only. The rest stays business —
+  // it still counts toward leg volume and the receipt, just not toward pay.
+  const rating = referral.rating ?? 100;
+  // Prefer the figure frozen on the referral; compute it only for records
+  // written before the field existed.
+  const base = referral.commissionBase ?? round2((referral.amountPaid || 0) * (rating / 100));
   if (!rate || base <= 0) return null;
 
   const sponsor = await Associate.findById(member.sponsorId).select('memberCode').lean();
@@ -158,7 +163,7 @@ const payDirect = async (member, referral) => {
     sourceMember: member._id,
     sourceMemberCode: member.memberCode,
     sourceReferral: referral._id,
-    basis: { rate, base, depthFromSource: null }
+    basis: { rate, base, rating, depthFromSource: null }
   });
 
   // Only bump the cache when the row is genuinely new — otherwise a replayed
@@ -178,11 +183,17 @@ const payDirect = async (member, referral) => {
  * landed are a contiguous run upward from the member, so a resume knows where
  * it stopped.
  */
-const payMatching = async (member, volume) => {
-  if (!(volume > 0)) return [];
+const payMatching = async (member, commissionVolume, businessVolume = commissionVolume) => {
+  // Two different numbers from here down. `commissionVolume` is the rated share
+  // and feeds carry, which is what matching pays on. `businessVolume` is the
+  // full amount and feeds the leg totals, which are turnover and must stay
+  // whole. At rating 100 they are the same number.
+  //
+  // Bail only when there is nothing of either to record — at rating 0 there is
+  // still business to post.
+  if (!(commissionVolume > 0) && !(businessVolume > 0)) return [];
 
   const rate = ratesFor(member.tier).matching;
-  if (!rate) return [];
 
   const ordered = await loadAncestorChain(member);
   if (!ordered.length) return []; // the root: nobody above to pay
@@ -197,10 +208,14 @@ const payMatching = async (member, volume) => {
     // compute matched = 0, and strand their volume in carry permanently.
     const after = await Associate.findOneAndUpdate(
       { _id: ancestor._id },
-      { $inc: { [CARRY_FIELD[side]]: volume, [VOLUME_FIELD[side]]: volume } },
+      { $inc: { [CARRY_FIELD[side]]: commissionVolume, [VOLUME_FIELD[side]]: businessVolume } },
       { returnDocument: 'after', projection:'memberCode carryLeft carryRight' }
     );
     if (!after) continue; // ancestor vanished mid-run; reconcile will flag it
+
+    // Turnover is recorded above regardless; without commissionable volume
+    // there is simply nothing to pair.
+    if (!rate || !(commissionVolume > 0)) continue;
 
     const matched = Math.min(after.carryLeft, after.carryRight);
     if (matched <= 0) continue;
@@ -297,7 +312,7 @@ const onPlacement = async (memberId) => {
     member: member._id,
     status: { $in: [REFERRAL_STATUSES.UNUSED, REFERRAL_STATUSES.USED] }
   })
-    .select('_id amountPaid')
+    .select('_id amountPaid rating commissionBase')
     .lean();
 
   // A member placed with no live referral has no money behind them. Record the
@@ -319,8 +334,14 @@ const onPlacement = async (memberId) => {
     return { direct: null, matching: [], note: 'no commission base' };
   }
 
+  // `??` rather than relying on schema defaults: this read is .lean(), which
+  // skips hydration, so a referral written before these fields existed comes
+  // back without them.
+  const rating = referral.rating ?? 100;
+  const commissionBase = referral.commissionBase ?? round2(referral.amountPaid * (rating / 100));
+
   const direct = await payDirect(member, referral);
-  const matching = await payMatching(member, referral.amountPaid);
+  const matching = await payMatching(member, commissionBase, referral.amountPaid);
 
   return { direct, matching };
 };
