@@ -94,7 +94,16 @@ const run = async () => {
   if (resetCarry) {
     const { modifiedCount } = await Associate.updateMany(
       { role: ROLES.ASSOCIATE },
-      { $set: { carryLeft: 0, carryRight: 0, totalLeftVolume: 0, totalRightVolume: 0 } }
+      {
+        $set: {
+          carryLeft: 0,
+          carryRight: 0,
+          totalLeftVolume: 0,
+          totalRightVolume: 0,
+          totalLeftRatedVolume: 0,
+          totalRightRatedVolume: 0
+        }
+      }
     );
     console.log(`Reset carry and volume on ${modifiedCount} associate(s).\n`);
   }

@@ -39,3 +39,6 @@ coverage/
 # OS generated files
 .DS_Store
 Thumbs.db
+
+# Local test-data seed scripts (fake associates, demo trees, backdated periods)
+scripts/dev-seed/

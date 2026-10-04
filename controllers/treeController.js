@@ -5,7 +5,8 @@ const { ROLES, TREE_STATUSES, TIERS } = require('../config/constants');
 const NODE_FIELDS =
   'memberCode fullName email phone status tier position profileImage ' +
   'leftChild rightChild parentId sponsorId sponsorMemberCode treeStatus ancestors depth directCount createdAt ' +
-  'carryLeft carryRight totalLeftVolume totalRightVolume directIncome matchingIncome';
+  'carryLeft carryRight totalLeftVolume totalRightVolume totalLeftRatedVolume totalRightRatedVolume ' +
+  'directIncome matchingIncome';
 
 /**
  * Member counts per leg, per tier, for a whole set of nodes in ONE aggregation.
@@ -72,13 +73,13 @@ const legCountsFor = async (nodes) => {
 const businessOf = (a, legs) => ({
   tierI: {
     carry: { left: a.carryLeft || 0, right: a.carryRight || 0 },
-    left: { count: legs?.left.tierI || 0, amount: a.totalLeftVolume || 0 },
-    right: { count: legs?.right.tierI || 0, amount: a.totalRightVolume || 0 }
+    left: { count: legs?.left.tierI || 0, amount: a.totalLeftVolume || 0, rated: a.totalLeftRatedVolume || 0 },
+    right: { count: legs?.right.tierI || 0, amount: a.totalRightVolume || 0, rated: a.totalRightRatedVolume || 0 }
   },
   tierII: {
     carry: { left: 0, right: 0 },
-    left: { count: legs?.left.tierII || 0, amount: 0 },
-    right: { count: legs?.right.tierII || 0, amount: 0 }
+    left: { count: legs?.left.tierII || 0, amount: 0, rated: 0 },
+    right: { count: legs?.right.tierII || 0, amount: 0, rated: 0 }
   }
 });
 

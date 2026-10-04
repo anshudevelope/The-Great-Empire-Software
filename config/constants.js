@@ -40,6 +40,7 @@ const COMMISSION_RATES = {
 // Which leg a member sits on maps to the carry/volume field of an ancestor.
 const CARRY_FIELD = { [POSITIONS.LEFT]: 'carryLeft', [POSITIONS.RIGHT]: 'carryRight' };
 const VOLUME_FIELD = { [POSITIONS.LEFT]: 'totalLeftVolume', [POSITIONS.RIGHT]: 'totalRightVolume' };
+const RATED_VOLUME_FIELD = { [POSITIONS.LEFT]: 'totalLeftRatedVolume', [POSITIONS.RIGHT]: 'totalRightRatedVolume' };
 
 // ---------------------------------------------------------------------------
 // Payout / closing
@@ -208,6 +209,7 @@ module.exports = {
   COMMISSION_RATES,
   CARRY_FIELD,
   VOLUME_FIELD,
+  RATED_VOLUME_FIELD,
   PAYOUT_STATUSES,
   PAYOUT,
   SETTING_KEYS,

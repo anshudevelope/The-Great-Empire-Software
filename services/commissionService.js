@@ -6,6 +6,7 @@ const {
   COMMISSION_RATES,
   CARRY_FIELD,
   VOLUME_FIELD,
+  RATED_VOLUME_FIELD,
   POSITIONS,
   STATUSES,
   TREE_STATUSES,
@@ -208,7 +209,13 @@ const payMatching = async (member, commissionVolume, businessVolume = commission
     // compute matched = 0, and strand their volume in carry permanently.
     const after = await Associate.findOneAndUpdate(
       { _id: ancestor._id },
-      { $inc: { [CARRY_FIELD[side]]: commissionVolume, [VOLUME_FIELD[side]]: businessVolume } },
+      {
+        $inc: {
+          [CARRY_FIELD[side]]: commissionVolume,
+          [VOLUME_FIELD[side]]: businessVolume,
+          [RATED_VOLUME_FIELD[side]]: commissionVolume
+        }
+      },
       { returnDocument: 'after', projection:'memberCode carryLeft carryRight' }
     );
     if (!after) continue; // ancestor vanished mid-run; reconcile will flag it

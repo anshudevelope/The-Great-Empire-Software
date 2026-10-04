@@ -15,9 +15,9 @@
     "backfill:commissions": "node scripts/backfillCommissions.js",
     "reconcile:commissions": "node scripts/reconcileCommissions.js",
     "verify:payouts": "node scripts/verifyPayouts.js",
-    "seed:test": "node scripts/seedTestAssociates.js",
-    "seed:demo": "node scripts/seedDemoData.js",
-    "seed:periods": "node scripts/seedPayoutPeriods.js",
+    "seed:test": "node scripts/dev-seed/seedTestAssociates.js",
+    "seed:demo": "node scripts/dev-seed/seedDemoData.js",
+    "seed:periods": "node scripts/dev-seed/seedPayoutPeriods.js",
     "sync:indexes": "node scripts/syncIndexes.js",
     "recode": "node scripts/recodeMembers.js"
   },

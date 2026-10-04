@@ -44,7 +44,8 @@ const run = async () => {
   const members = await Associate.find({ role: ROLES.ASSOCIATE })
     .select(
       'memberCode directIncome matchingIncome carryLeft carryRight ' +
-        'totalLeftVolume totalRightVolume ancestors depth treeStatus position'
+        'totalLeftVolume totalRightVolume totalLeftRatedVolume totalRightRatedVolume ' +
+        'ancestors depth treeStatus position'
     )
     .lean();
 
@@ -121,25 +122,38 @@ const run = async () => {
   // ancestor. Recomputing that from the tree is what catches a settle() run
   // that died partway up the chain — the ledger looks plausible, but the
   // ancestors above the failure point are short.
+  // Rated volume is checked alongside: same walk, but the referral's
+  // commissionBase (amountPaid × rating) instead of the full amount.
   const bases = new Map(
     (
       await Referral.find({ status: { $in: [REFERRAL_STATUSES.UNUSED, REFERRAL_STATUSES.USED] } })
-        .select('member amountPaid')
+        .select('member amountPaid rating commissionBase')
         .lean()
-    ).map((r) => [String(r.member), r.amountPaid || 0])
+    ).map((r) => {
+      const paid = r.amountPaid || 0;
+      const rated = r.commissionBase ?? round2(paid * ((r.rating ?? 100) / 100));
+      return [String(r.member), { paid, rated }];
+    })
   );
 
-  const expectedVolume = new Map(); // ancestorId -> { left, right }
-  const bump = (id, side, amount) => {
+  const expectedVolume = new Map(); // ancestorId -> { left, right, ratedLeft, ratedRight }
+  const bump = (id, side, { paid, rated }) => {
     const key = String(id);
-    if (!expectedVolume.has(key)) expectedVolume.set(key, { left: 0, right: 0 });
-    expectedVolume.get(key)[side === POSITIONS.LEFT ? 'left' : 'right'] += amount;
+    if (!expectedVolume.has(key)) expectedVolume.set(key, { left: 0, right: 0, ratedLeft: 0, ratedRight: 0 });
+    const exp = expectedVolume.get(key);
+    if (side === POSITIONS.LEFT) {
+      exp.left += paid;
+      exp.ratedLeft += rated;
+    } else {
+      exp.right += paid;
+      exp.ratedRight += rated;
+    }
   };
 
   for (const m of members) {
     if (m.treeStatus === TREE_STATUSES.UNPLACED) continue;
-    const base = bases.get(String(m._id)) || 0;
-    if (base <= 0) continue;
+    const base = bases.get(String(m._id));
+    if (!base || base.paid <= 0) continue;
 
     const ordered = (m.ancestors || []).map((id) => byId.get(String(id)));
     if (ordered.some((a) => !a)) {
@@ -157,9 +171,11 @@ const run = async () => {
   }
 
   for (const m of members) {
-    const exp = expectedVolume.get(String(m._id)) || { left: 0, right: 0 };
+    const exp = expectedVolume.get(String(m._id)) || { left: 0, right: 0, ratedLeft: 0, ratedRight: 0 };
     const actualL = m.totalLeftVolume || 0;
     const actualR = m.totalRightVolume || 0;
+    const actualRatedL = m.totalLeftRatedVolume || 0;
+    const actualRatedR = m.totalRightRatedVolume || 0;
 
     if (round2(actualL) !== round2(exp.left) || round2(actualR) !== round2(exp.right)) {
       report(
@@ -170,6 +186,22 @@ const run = async () => {
         updateOne: {
           filter: { _id: m._id },
           update: { $set: { totalLeftVolume: round2(exp.left), totalRightVolume: round2(exp.right) } }
+        }
+      });
+    }
+
+    if (round2(actualRatedL) !== round2(exp.ratedLeft) || round2(actualRatedR) !== round2(exp.ratedRight)) {
+      report(
+        'legRatedVolume',
+        `${m.memberCode}: stored rated volume L=${actualRatedL} R=${actualRatedR}, ` +
+          `but the tree implies L=${round2(exp.ratedLeft)} R=${round2(exp.ratedRight)}.`
+      );
+      repairs.push({
+        updateOne: {
+          filter: { _id: m._id },
+          update: {
+            $set: { totalLeftRatedVolume: round2(exp.ratedLeft), totalRightRatedVolume: round2(exp.ratedRight) }
+          }
         }
       });
     }

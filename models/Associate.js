@@ -139,6 +139,11 @@ const associateSchema = new mongoose.Schema(
         // drift, the same way verifyTree.js does for ancestors/depth.
         totalLeftVolume: { type: Number, default: 0 },
         totalRightVolume: { type: Number, default: 0 },
+        // The rated share of the volume above (amountPaid × rating) — what
+        // entered carry. Lifetime, so matching never reduces it; carry alone
+        // can't show it once pairs have been taken out.
+        totalLeftRatedVolume: { type: Number, default: 0 },
+        totalRightRatedVolume: { type: Number, default: 0 },
         directIncome: { type: Number, default: 0 },
         matchingIncome: { type: Number, default: 0 },
 
