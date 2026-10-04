@@ -1,7 +1,8 @@
 const Associate = require('../models/Associate');
 const Referral = require('../models/Referral');
 const bcrypt = require('bcryptjs');
-const { cloudinary } = require('../config/cloudinary');
+const mongoose = require('mongoose');
+const { destroyIfUnused } = require('../services/mediaService');
 const { nextMemberCode, nextReferralNo, nextInvoiceNo } = require('../utils/codes');
 const { withTransaction } = require('../utils/transaction');
 const { encrypt, decrypt } = require('../utils/secretBox');
@@ -33,7 +34,7 @@ const {
   pickAllowedFields
 } = require('../config/constants');
 const { BUSINESSES, BUSINESS_TIER } = require('../config/business');
-const { currentBusiness } = require('../utils/businessContext');
+const { currentBusiness, runInBusiness } = require('../utils/businessContext');
 
 // Matches the admin form's validation. Associates choosing their own password
 // on /auth/change-password are held to the stricter rule there.
@@ -87,6 +88,41 @@ const assertUniqueContact = async ({ email, phone }) => {
 };
 
 const escapeRegex = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+// ---------------------------------------------------------------------------
+// Import from T1 — a T2 registration can start from an existing T1 member.
+// Only the T2 console may read T1 this way; T1 itself is never written to.
+// ---------------------------------------------------------------------------
+const IMPORT_SOURCE = BUSINESSES.T1;
+
+const assertImportTarget = (business) => {
+  if (business === IMPORT_SOURCE) throw httpError('Import from T1 is only available in T2.', 400);
+};
+
+const loadImportSource = async (id) => {
+  if (!mongoose.isValidObjectId(id)) throw httpError('Invalid associate id.', 400);
+  const source = await runInBusiness(IMPORT_SOURCE, () =>
+    Associate.findOne({ _id: id, role: ROLES.ASSOCIATE }).select('+passwordEnc')
+  );
+  if (!source) throw httpError('T1 associate not found.', 404);
+  return source;
+};
+
+// Photo and documents of the T1 member being imported, read from T1 rather
+// than the request, so a client can't attach files that aren't theirs.
+const importedMedia = async (importFrom, business) => {
+  const none = { profileImage: {}, documents: [] };
+  if (!importFrom) return none;
+  assertImportTarget(business);
+  const source = await loadImportSource(importFrom);
+  const strip = ({ docType, url, public_id }) => ({ docType, url, public_id });
+  return {
+    profileImage: source.profileImage?.url
+      ? { url: source.profileImage.url, public_id: source.profileImage.public_id }
+      : {},
+    documents: (source.documents || []).map(strip)
+  };
+};
 
 // Does walking up the referral chain from `startId` reach `targetId`? Used to
 // stop a sponsor change from closing a loop (A sponsors B, B sponsors A).
@@ -200,7 +236,12 @@ exports.registerAssociate = async (req, res, next) => {
     // Validated before any code is minted, so a bad payment doesn't burn one.
     const payment = sponsor ? await parsePayment(req.body) : null;
     const placeNow = Boolean(sponsor && position);
-    const { profileImage, documents } = collectUploads(req);
+    const uploads = collectUploads(req);
+    // Imported from T1: reuse their photo and documents. A freshly uploaded
+    // photo wins; fresh documents are added after the imported ones.
+    const imported = await importedMedia(req.body.importFrom, business);
+    const profileImage = uploads.profileImage.url ? uploads.profileImage : imported.profileImage;
+    const documents = [...imported.documents, ...uploads.documents];
 
     // Minted outside the transaction so a retry reuses the same codes rather
     // than burning new ones on every attempt.
@@ -693,6 +734,63 @@ exports.lookupByCode = async (req, res, next) => {
 };
 
 // ---------------------------------------------------------------------------
+// 6b. IMPORT FROM T1 — the picker on T2's Register page, and the profile it
+// fills the form with. Admin-only (it returns the T1 password).
+// ---------------------------------------------------------------------------
+exports.searchImportSource = async (req, res, next) => {
+  try {
+    assertImportTarget(currentBusiness());
+    const q = String(req.query.q || '').trim();
+
+    const filter = { role: ROLES.ASSOCIATE };
+    if (q) {
+      const rx = { $regex: escapeRegex(q), $options: 'i' };
+      filter.$or = [{ memberCode: rx }, { fullName: rx }, { email: rx }, { phone: rx }];
+    }
+
+    const results = await runInBusiness(IMPORT_SOURCE, () =>
+      Associate.find(filter).select('memberCode fullName email phone status').sort({ memberCode: 1 }).limit(20).lean()
+    );
+
+    // Email is the login identity and unique per business: one already used
+    // in this business means the person has been imported (or registered) here.
+    const taken = new Set(
+      (await Associate.find({ email: { $in: results.map((r) => r.email) } }).select('email').lean()).map((r) => r.email)
+    );
+
+    return res.status(200).json({
+      success: true,
+      count: results.length,
+      data: results.map((r) => ({ ...r, alreadyImported: taken.has(r.email) }))
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.getImportSource = async (req, res, next) => {
+  try {
+    assertImportTarget(currentBusiness());
+    const source = await loadImportSource(req.params.id);
+    const details = pickAllowedFields(source.toObject(), MEMBER_DETAIL_FIELDS);
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        _id: source._id,
+        memberCode: source.memberCode,
+        ...details,
+        password: decrypt(source.passwordEnc),
+        profileImage: source.profileImage?.url ? source.profileImage.url : null,
+        documentCount: (source.documents || []).length
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// ---------------------------------------------------------------------------
 // 7. SEARCH — powers the admin's searchable selects (sponsor, receivedBy,
 // parent). Admin-only, because it can enumerate the membership.
 // ---------------------------------------------------------------------------
@@ -1173,9 +1271,8 @@ exports.updateAssociate = async (req, res, next) => {
     const { profileImage, documents } = collectUploads(req);
 
     if (profileImage.url) {
-      if (associate.profileImage && associate.profileImage.public_id) {
-        await cloudinary.uploader.destroy(associate.profileImage.public_id);
-      }
+      // Shared with the member's record in the other business when imported.
+      await destroyIfUnused(associate.profileImage?.public_id, associate._id);
       updateFields.profileImage = profileImage;
     }
 
@@ -1270,14 +1367,10 @@ exports.deleteAssociate = async (req, res, next) => {
       });
     }
 
-    if (associate.profileImage && associate.profileImage.public_id) {
-      await cloudinary.uploader.destroy(associate.profileImage.public_id);
-    }
-
-    if (associate.documents && associate.documents.length > 0) {
-      for (const doc of associate.documents) {
-        if (doc.public_id) await cloudinary.uploader.destroy(doc.public_id);
-      }
+    // Shared with the member's record in the other business when imported.
+    await destroyIfUnused(associate.profileImage?.public_id, associate._id);
+    for (const doc of associate.documents || []) {
+      await destroyIfUnused(doc.public_id, associate._id);
     }
 
     await detachFromParent(associate.parentId, associate.position, associate._id);

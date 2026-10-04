@@ -10,6 +10,8 @@ const {
   getPlacementPreview,
   lookupByCode,
   searchAssociates,
+  searchImportSource,
+  getImportSource,
   getAllAssociates,
   getAssociateById,
   updateAssociate,
@@ -55,6 +57,10 @@ router.get('/placement-preview', getPlacementPreview);
 router.get('/search', adminOnly, rateLimit({ windowMs: 60_000, max: 60 }), searchAssociates);
 
 router.get('/lookup/:memberCode', rateLimit({ windowMs: 60_000, max: 60 }), lookupByCode);
+
+// T2's Register page: pick a T1 member and start the form from their profile.
+router.get('/import/t1', adminOnly, rateLimit({ windowMs: 60_000, max: 60 }), searchImportSource);
+router.get('/import/t1/:id', adminOnly, getImportSource);
 
 // Only the admin registers associates. adminOnly runs before the upload so a
 // rejected request never pushes files to Cloudinary.
