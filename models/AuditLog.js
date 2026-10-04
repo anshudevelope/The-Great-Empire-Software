@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { bindModel } = require('../utils/businessContext');
 
 /**
  * Append-only record of financially sensitive actions.
@@ -34,4 +35,4 @@ const auditLogSchema = new mongoose.Schema(
 auditLogSchema.index({ createdAt: -1 });
 auditLogSchema.index({ target: 1, createdAt: -1 });
 
-module.exports = mongoose.model('AuditLog', auditLogSchema);
+module.exports = bindModel('AuditLog', auditLogSchema);

@@ -76,9 +76,15 @@ const commissionRoutes = require('./routes/commissionRoutes');
 const payoutRoutes = require('./routes/payoutRoutes');
 const settingsRoutes = require('./routes/settingsRoutes');
 
+const { resolveBusiness, forceBusiness } = require('./middlewares/businessMiddleware');
+const { BUSINESSES } = require('./config/business');
+
 // API Endpoint Mounting
+// Auth is pinned to T1 before the header is read: the admin account lives
+// there, whichever business the console currently has open.
+app.use('/api/auth', forceBusiness(BUSINESSES.T1), authRoutes);
+app.use('/api', resolveBusiness);
 app.use('/api/associates', associateRoutes);
-app.use('/api/auth', authRoutes);
 app.use('/api/referrals', referralRoutes);
 app.use('/api/tree', treeRoutes);
 app.use('/api/reports', reportRoutes);

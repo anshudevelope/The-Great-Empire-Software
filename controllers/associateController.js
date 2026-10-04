@@ -32,6 +32,8 @@ const {
   SELF_UPDATABLE_FIELDS,
   pickAllowedFields
 } = require('../config/constants');
+const { BUSINESSES, BUSINESS_TIER } = require('../config/business');
+const { currentBusiness } = require('../utils/businessContext');
 
 // Matches the admin form's validation. Associates choosing their own password
 // on /auth/change-password are held to the stricter rule there.
@@ -129,7 +131,11 @@ const withPassword = (doc) => ({ ...doc.toJSON(), password: decrypt(doc.password
 // ---------------------------------------------------------------------------
 exports.registerAssociate = async (req, res, next) => {
   try {
-    const { password, tier, sponsorId, position } = req.body;
+    const { password, sponsorId, position } = req.body;
+    // T2 holds one tier only, so the server decides it; the client's value is
+    // ignored there. T1 still takes the tier from the form, as before.
+    const business = currentBusiness();
+    const tier = business === BUSINESSES.T1 ? req.body.tier : BUSINESS_TIER[business];
     const details = pickAllowedFields(req.body, MEMBER_DETAIL_FIELDS);
 
     if (!details.email || !details.phone || !password) {

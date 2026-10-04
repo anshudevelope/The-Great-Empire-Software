@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { bindModel } = require('../utils/businessContext');
 const { COMMISSION_TYPES, TIERS, POSITIONS } = require('../config/constants');
 
 /**
@@ -117,4 +118,4 @@ commissionLedgerSchema.index({ type: 1, createdAt: -1 });        // admin filter
 // Compound so the unpaid filter and the grouping are served by one index.
 commissionLedgerSchema.index({ payoutBatch: 1, beneficiary: 1 });
 
-module.exports = mongoose.model('CommissionLedger', commissionLedgerSchema);
+module.exports = bindModel('CommissionLedger', commissionLedgerSchema);

@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { bindModel } = require('../utils/businessContext');
 const { REFERRAL_STATUSES, TIERS, PAYMENT_MODES } = require('../config/constants');
 
 /**
@@ -144,4 +145,4 @@ referralSchema.index(
   }
 );
 
-module.exports = mongoose.model('Referral', referralSchema);
+module.exports = bindModel('Referral', referralSchema);

@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { bindModel } = require('../utils/businessContext');
 const { ROLES, STATUSES, TIERS, POSITIONS, TREE_STATUSES } = require('../config/constants');
 
 const associateSchema = new mongoose.Schema(
@@ -212,4 +213,4 @@ associateSchema.virtual('isInTree').get(function () {
     return this.treeStatus !== TREE_STATUSES.UNPLACED;
 });
 
-module.exports = mongoose.model('Associate', associateSchema);
+module.exports = bindModel('Associate', associateSchema);

@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { login, changePassword, me } = require('../controllers/authController');
+const { login, chooseBusiness, changePassword, me } = require('../controllers/authController');
 const { requireAuth } = require('../middlewares/authMiddleware');
 const { rateLimit } = require('../middlewares/rateLimit');
 
@@ -15,6 +15,8 @@ const loginLimiter = rateLimit({
 // Canonical login. The body's `audience` says which door the request came
 // through, and a role that doesn't match it fails like a wrong password.
 router.post('/login', loginLimiter, login);
+// Second step when one password opened accounts in both businesses.
+router.post('/login/choose', loginLimiter, chooseBusiness);
 
 // Legacy alias for old admin bookmarks. The audience is pinned here rather
 // than read from the body — this path is the admin door by definition.

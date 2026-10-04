@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { bindModel } = require('../utils/businessContext');
 const { SETTING_DEFAULTS } = require('../config/constants');
 
 /**
@@ -63,4 +64,4 @@ settingSchema.statics.put = function (key, value, actor = null) {
   );
 };
 
-module.exports = mongoose.model('Setting', settingSchema);
+module.exports = bindModel('Setting', settingSchema);

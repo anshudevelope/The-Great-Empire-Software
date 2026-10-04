@@ -13,6 +13,8 @@ const {
   REFERRAL_STATUSES,
   TIERS
 } = require('../config/constants');
+const { BUSINESS_TIER } = require('../config/business');
+const { currentBusiness } = require('../utils/businessContext');
 
 // ---------------------------------------------------------------------------
 // Why nothing in this file takes a session
@@ -313,7 +315,10 @@ const onPlacement = async (memberId) => {
   // has already propagated up the tree if they are later rejected.
   if (member.status !== STATUSES.APPROVED) return { skipped: `status: ${member.status}` };
 
-  if (member.tier !== TIERS.ONE) return { skipped: `tier not active: ${member.tier}` };
+  // Each business pays only its own tier. In T1 that is still Tier I alone, so
+  // the Tier II members that predate T2 keep earning nothing.
+  const activeTier = BUSINESS_TIER[currentBusiness()];
+  if (member.tier !== activeTier) return { skipped: `tier not active: ${member.tier}` };
 
   const referral = await Referral.findOne({
     member: member._id,

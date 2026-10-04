@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { bindModel } = require('../utils/businessContext');
 const { PAYOUT_STATUSES } = require('../config/constants');
 
 /**
@@ -105,4 +106,4 @@ payoutBatchSchema.index(
 payoutBatchSchema.index({ createdAt: -1 });
 payoutBatchSchema.index({ periodEnd: -1 });
 
-module.exports = mongoose.model('PayoutBatch', payoutBatchSchema);
+module.exports = bindModel('PayoutBatch', payoutBatchSchema);

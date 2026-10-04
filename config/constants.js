@@ -34,7 +34,10 @@ const COMMISSION_TYPES = {
 // into basis.rate. This table is only ever read for NEW rows.
 const COMMISSION_RATES = {
   [TIERS.ONE]: { direct: 0.10, matching: 0.05 },
-  [TIERS.TWO]: { direct: 0, matching: 0 } // Tier II generates no volume yet
+  // T2 (Plots) — its own business in its own database. Only paid when the
+  // active business is T2; T1's legacy Tier II rows are skipped by the
+  // business-tier guard in commissionService, not by a zero rate.
+  [TIERS.TWO]: { direct: 0.05, matching: 0.05 }
 };
 
 // Which leg a member sits on maps to the carry/volume field of an ancestor.

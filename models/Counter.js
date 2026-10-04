@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { bindModel } = require('../utils/businessContext');
 
 // Atomic sequence generator. One document per sequence (e.g. _id: 'memberCode').
 // Never derive a sequence from countDocuments() — two concurrent registrations
@@ -27,4 +28,4 @@ counterSchema.statics.raiseTo = async function (name, value) {
   }
 };
 
-module.exports = mongoose.model('Counter', counterSchema);
+module.exports = bindModel('Counter', counterSchema);

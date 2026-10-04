@@ -2,6 +2,9 @@ const jwt = require('jsonwebtoken');
 const jwtConfig = require('../config/jwt');
 const Associate = require('../models/Associate');
 const { ROLES, STATUSES } = require('../config/constants');
+const { BUSINESSES, BUSINESS_LIST } = require('../config/business');
+const { currentBusiness, runInBusiness } = require('../utils/businessContext');
+const { ensureBusinessReady } = require('../services/businessService');
 
 // ---------------------------------------------------------------------------
 // requireAuth — verifies the token and loads the live user.
@@ -30,14 +33,23 @@ const requireAuth = async (req, res, next) => {
     if (!decoded.sub) {
         // Pre-RBAC tokens carried only an email. They can't identify a user, so
         // they're rejected outright and the client is forced to log in again.
+        // A login pick token has no sub either, so it can't be used as a session.
         return res.status(401).json({ success: false, message: 'Stale token. Please log in again.' });
     }
 
-    const user = await Associate.findById(decoded.sub).select(
-        'memberCode fullName email role status tier ancestors depth parentId position leftChild rightChild sponsorId'
+    // The business the account lives in. Tokens from before T2 carry none and
+    // are T1 accounts.
+    const userBusiness = BUSINESS_LIST.includes(decoded.biz) ? decoded.biz : BUSINESSES.T1;
+
+    const user = await runInBusiness(userBusiness, () =>
+        Associate.findById(decoded.sub).select(
+            'memberCode fullName email role status tier ancestors depth parentId position leftChild rightChild sponsorId'
+        )
     );
 
-    if (!user) {
+    // Admins exist only in T1; T2 holds a password-less copy that must never
+    // act as a session.
+    if (!user || (user.role === ROLES.ADMIN && userBusiness !== BUSINESSES.T1)) {
         return res.status(401).json({ success: false, message: 'Account no longer exists.' });
     }
 
@@ -49,6 +61,14 @@ const requireAuth = async (req, res, next) => {
     }
 
     req.user = user;
+    req.userBusiness = userBusiness;
+
+    // Associates are held to the business their account lives in, whatever
+    // header arrives: a T1 member can't read T2 by changing X-Business.
+    if (user.role !== ROLES.ADMIN) return runInBusiness(userBusiness, next);
+
+    // The admin works in whichever business the console has open.
+    await ensureBusinessReady(currentBusiness(), user);
     next();
 };
 

@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { bindModel } = require('../utils/businessContext');
 
 /**
  * One associate's figures within one payout batch.
@@ -79,4 +80,4 @@ payoutLineSchema.index({ member: 1, createdAt: -1 });
 // Search within a batch.
 payoutLineSchema.index({ batch: 1, netPayable: -1 });
 
-module.exports = mongoose.model('PayoutLine', payoutLineSchema);
+module.exports = bindModel('PayoutLine', payoutLineSchema);

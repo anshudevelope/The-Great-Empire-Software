@@ -13,6 +13,8 @@
  * that are missing, which is exactly what that situation needs.
  *
  * Run after any change to an index definition. Safe to re-run.
+ *
+ * Pass `-- --business t2` (or `all`) to sync the T2 database; the default is t1.
  */
 require('dotenv').config();
 const mongoose = require('mongoose');
@@ -23,6 +25,17 @@ const CommissionLedger = require('../models/CommissionLedger');
 const PayoutBatch = require('../models/PayoutBatch');
 const PayoutLine = require('../models/PayoutLine');
 const Setting = require('../models/Setting');
+const { BUSINESS_LIST } = require('../config/business');
+const { runInBusiness } = require('../utils/businessContext');
+
+// npm run sync:indexes -- --business t2   (t1 | t2 | all; default t1)
+const arg = process.argv.indexOf('--business');
+const requested = arg > -1 ? process.argv[arg + 1] : 't1';
+const TARGETS = requested === 'all' ? BUSINESS_LIST : [requested];
+if (!TARGETS.every((b) => BUSINESS_LIST.includes(b))) {
+  console.error(`Unknown --business "${requested}". Use t1, t2 or all.`);
+  process.exit(1);
+}
 
 // Every model with a declared index belongs here. A model left out keeps
 // whatever indexes mongoose's autoIndex happened to build at runtime — which
@@ -40,31 +53,36 @@ const run = async () => {
   await mongoose.connect(process.env.MONGO_URI);
   console.log('Connected to MongoDB\n');
 
-  for (const model of MODELS) {
-    const name = model.collection.collectionName;
-    console.log(`=== ${name} ===`);
+  for (const business of TARGETS) {
+    console.log(`##### business ${business} #####\n`);
+    await runInBusiness(business, async () => {
+      for (const model of MODELS) {
+        const name = model.collection.collectionName;
+        console.log(`=== ${name} ===`);
 
-    const before = await model.collection.indexes();
+        const before = await model.collection.indexes();
 
-    let dropped = [];
-    try {
-      dropped = await model.syncIndexes();
-    } catch (error) {
-      // A unique index cannot be built while duplicate values exist. Say which
-      // constraint failed rather than dying with a raw driver error.
-      console.error(`  FAILED: ${error.message}`);
-      console.error('  Existing duplicate data must be resolved before this index can be created.\n');
-      continue;
-    }
+        let dropped = [];
+        try {
+          dropped = await model.syncIndexes();
+        } catch (error) {
+          // A unique index cannot be built while duplicate values exist. Say which
+          // constraint failed rather than dying with a raw driver error.
+          console.error(`  FAILED: ${error.message}`);
+          console.error('  Existing duplicate data must be resolved before this index can be created.\n');
+          continue;
+        }
 
-    const after = await model.collection.indexes();
-    const beforeNames = new Set(before.map((i) => i.name));
-    const added = after.filter((i) => !beforeNames.has(i.name));
+        const after = await model.collection.indexes();
+        const beforeNames = new Set(before.map((i) => i.name));
+        const added = after.filter((i) => !beforeNames.has(i.name));
 
-    if (dropped.length) dropped.forEach((n) => console.log(`  dropped  ${n}`));
-    added.forEach((i) => console.log(`  created  ${describe(i)}`));
-    if (!dropped.length && !added.length) console.log('  already in sync');
-    console.log('');
+        if (dropped.length) dropped.forEach((n) => console.log(`  dropped  ${n}`));
+        added.forEach((i) => console.log(`  created  ${describe(i)}`));
+        if (!dropped.length && !added.length) console.log('  already in sync');
+        console.log('');
+      }
+    });
   }
 
   console.log('Index sync complete.');

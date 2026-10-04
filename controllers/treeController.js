@@ -1,5 +1,7 @@
 const Associate = require('../models/Associate');
 const { ROLES, TREE_STATUSES, TIERS } = require('../config/constants');
+const { BUSINESS_TIER } = require('../config/business');
+const { currentBusiness } = require('../utils/businessContext');
 
 // Everything a tree node or list row needs to render, and nothing more.
 const NODE_FIELDS =
@@ -66,22 +68,28 @@ const legCountsFor = async (nodes) => {
 /**
  * The tooltip's business table.
  *
- * Tier II carries real member counts but zero volume: the commission engine
- * only recognises Tier I today (COMMISSION_RATES in config/constants), so
- * showing anything else there would be inventing numbers.
+ * The member's carry and volume fields belong to the active business's tier:
+ * Tier I in T1, Tier II in T2. The other tier keeps its real member count but
+ * zero volume, because the engine never pays it in this business.
  */
-const businessOf = (a, legs) => ({
-  tierI: {
+const businessOf = (a, legs) => {
+  const volume = (side) => ({
     carry: { left: a.carryLeft || 0, right: a.carryRight || 0 },
-    left: { count: legs?.left.tierI || 0, amount: a.totalLeftVolume || 0, rated: a.totalLeftRatedVolume || 0 },
-    right: { count: legs?.right.tierI || 0, amount: a.totalRightVolume || 0, rated: a.totalRightRatedVolume || 0 }
-  },
-  tierII: {
+    left: { count: legs?.left[side] || 0, amount: a.totalLeftVolume || 0, rated: a.totalLeftRatedVolume || 0 },
+    right: { count: legs?.right[side] || 0, amount: a.totalRightVolume || 0, rated: a.totalRightRatedVolume || 0 }
+  });
+  const countsOnly = (side) => ({
     carry: { left: 0, right: 0 },
-    left: { count: legs?.left.tierII || 0, amount: 0, rated: 0 },
-    right: { count: legs?.right.tierII || 0, amount: 0, rated: 0 }
-  }
-});
+    left: { count: legs?.left[side] || 0, amount: 0, rated: 0 },
+    right: { count: legs?.right[side] || 0, amount: 0, rated: 0 }
+  });
+
+  const tierIIActive = BUSINESS_TIER[currentBusiness()] === TIERS.TWO;
+  return {
+    tierI: tierIIActive ? countsOnly('tierI') : volume('tierI'),
+    tierII: tierIIActive ? volume('tierII') : countsOnly('tierII')
+  };
+};
 
 const toNode = (a, parentCode = null, legs = null) => ({
   _id: a._id,

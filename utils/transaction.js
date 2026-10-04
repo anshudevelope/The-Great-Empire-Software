@@ -31,6 +31,8 @@ const withTransaction = async (fn, { maxRetries = 3 } = {}) => {
   if (transactionsSupported === false) return fn(null);
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    // One MongoClient serves every business database (useDb), so a session
+    // from the default connection works inside T2 as well.
     const session = await mongoose.startSession();
     try {
       let result;
