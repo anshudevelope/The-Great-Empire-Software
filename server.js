@@ -94,6 +94,12 @@ app.use('/api/commissions', commissionRoutes);
 app.use('/api/payouts', payoutRoutes);
 app.use('/api/settings', settingsRoutes);
 
+// T2 property & plot-sales module — its own routers, admin + T2 only.
+const { propertyRouter, salesRouter, commissionRouter } = require('./routes/plots');
+app.use('/api/property', propertyRouter);
+app.use('/api/plot-sales', salesRouter);
+app.use('/api/plot-commission', commissionRouter);
+
 // Health Check Route
 app.get('/', (req, res) => {
   res.send({ status: 'API is running...' });

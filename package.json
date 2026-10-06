@@ -19,7 +19,8 @@
     "seed:demo": "node scripts/dev-seed/seedDemoData.js",
     "seed:periods": "node scripts/dev-seed/seedPayoutPeriods.js",
     "sync:indexes": "node scripts/syncIndexes.js",
-    "recode": "node scripts/recodeMembers.js"
+    "recode": "node scripts/recodeMembers.js",
+    "reconcile:plots": "node scripts/reconcilePlotCommissions.js"
   },
   "keywords": [],
   "author": "",

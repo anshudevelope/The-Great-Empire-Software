@@ -50,12 +50,15 @@ const connectionFor = (business) => {
  * Functions are bound to the real model so Mongoose's internals never see the
  * Proxy as `this`.
  */
-const bindModel = (name, schema) => {
+const bindModel = (name, schema, { only = null } = {}) => {
   registry.set(name, schema);
-  const t1Model = mongoose.model(name, schema);
+  // A model restricted to one business (the T2 plot module) is never compiled
+  // on the other connections, so no empty collections or indexes appear there.
+  const t1Model = !only || only === BUSINESSES.T1 ? mongoose.model(name, schema) : null;
 
   const resolve = () => {
     const business = currentBusiness();
+    if (only && business !== only) throw new Error(`${name} is only available in business ${only}.`);
     return business === BUSINESSES.T1 ? t1Model : connectionFor(business).models[name];
   };
 
