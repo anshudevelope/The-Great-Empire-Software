@@ -4,7 +4,7 @@ const PlotNetwork = require('../../models/plots/Network');
 const PlotPayment = require('../../models/plots/Payment');
 const PlotBooking = require('../../models/plots/Booking');
 const { COMMISSION_TYPES, POSITIONS } = require('../../config/constants');
-const { PLOT_COMMISSION, INSTALMENT_STATUSES, BOOKING_STATUSES } = require('../../config/plotConfig');
+const { PLOT_COMMISSION, PLOT_SELF_LEG, INSTALMENT_STATUSES, BOOKING_STATUSES } = require('../../config/plotConfig');
 // Read-only helpers from the registration engine: walking the tree is the same
 // for both. Nothing here writes to a registration model or ledger.
 const { loadAncestorChain, resolveLegSides } = require('../commissionService');
@@ -78,18 +78,36 @@ const payDirect = async (payment, booking, seller) => {
  * the result in one atomic operation, claim the matched carry with a guarded
  * update before paying, give it back if the row turns out to exist already.
  */
-const payMatching = async (payment, booking, seller) => {
+/**
+ * Everyone whose leg a sale's business lands in, nearest first.
+ *
+ * Normally that is the seller's upline, on the side the seller sits under each
+ * of them. A sale placed in the seller's OWN left or right leg (booking.leg)
+ * lands in the seller's own network first — that is what lets them build their
+ * own matching — and then still flows up the upline exactly as before.
+ */
+const legChain = async (seller, leg) => {
+  const ordered = await loadAncestorChain(seller);
+  const upline = ordered.length ? resolveLegSides(seller, ordered) : [];
+  const own =
+    PLOT_SELF_LEG.enabled && (leg === POSITIONS.LEFT || leg === POSITIONS.RIGHT)
+      ? [{ ancestor: seller, side: leg, depthFromSource: 0 }]
+      : [];
+  return [...own, ...upline];
+};
+
+const payMatching = async (payment, booking, seller, chainOverride = null) => {
   const commissionVolume = payment.commissionBase;
   const businessVolume = payment.paidAmount;
   if (!(commissionVolume > 0) && !(businessVolume > 0)) return [];
 
-  const ordered = await loadAncestorChain(seller);
-  if (!ordered.length) return [];
+  const chain = chainOverride ?? (await legChain(seller, booking.leg));
+  if (!chain.length) return [];
 
   const rate = PLOT_COMMISSION.matching;
   const written = [];
 
-  for (const { ancestor, side, depthFromSource } of resolveLegSides(seller, ordered)) {
+  for (const { ancestor, side, depthFromSource } of chain) {
     const after = await PlotNetwork.findOneAndUpdate(
       { associate: ancestor._id },
       {
@@ -157,7 +175,7 @@ const onPaymentReceived = async (paymentId) => {
   const payment = await PlotPayment.findById(paymentId).lean();
   if (!payment || payment.status !== INSTALMENT_STATUSES.PAID) return { skipped: 'not paid' };
 
-  const booking = await PlotBooking.findById(payment.booking).select('_id code associate status').lean();
+  const booking = await PlotBooking.findById(payment.booking).select('_id code associate status leg').lean();
   if (!booking) return { skipped: 'booking not found' };
   // A replay after cancellation must not pay on a sale that no longer exists.
   if (booking.status === BOOKING_STATUSES.CANCELLED) return { skipped: 'booking cancelled' };
@@ -192,6 +210,51 @@ const onPaymentReceived = async (paymentId) => {
   return { direct, matching };
 };
 
+/**
+ * Post one already-paid instalment's business into the seller's OWN leg only.
+ *
+ * For bookings sold "upline only" and given a leg afterwards: the upline was
+ * already credited when the payment came in, so only the seller's own leg (and
+ * their matching on it) is added here. Guarded by a per-payment marker, so a
+ * second run changes nothing.
+ */
+const postOwnLegForPayment = async (paymentId) => {
+  const payment = await PlotPayment.findById(paymentId).lean();
+  if (!payment || payment.status !== INSTALMENT_STATUSES.PAID) return { skipped: 'not paid' };
+
+  const booking = await PlotBooking.findById(payment.booking).select('_id code associate status leg').lean();
+  if (!booking || booking.status === BOOKING_STATUSES.CANCELLED) return { skipped: 'booking not live' };
+  if (booking.leg !== POSITIONS.LEFT && booking.leg !== POSITIONS.RIGHT) return { skipped: 'no leg' };
+
+  // Only payments whose upline volume was already posted, so nothing is missed
+  // or posted twice: later payments go through onPaymentReceived normally.
+  const posted = await PlotCommission.exists({ idempotencyKey: `plot:volume:${payment._id}` });
+  if (!posted) return { skipped: 'volume not posted yet' };
+  if (await PlotCommission.exists({ idempotencyKey: `plot:ownleg:${payment._id}` })) return { skipped: 'already in own leg' };
+
+  const seller = await loadSeller(booking.associate);
+  if (!seller) return { skipped: 'associate not found' };
+
+  const matching = await payMatching(payment, booking, seller, [{ ancestor: seller, side: booking.leg, depthFromSource: 0 }]);
+
+  await writeRow({
+    idempotencyKey: `plot:ownleg:${payment._id}`,
+    beneficiary: seller._id,
+    beneficiaryCode: seller.memberCode,
+    type: COMMISSION_TYPES.DIRECT,
+    amount: 0,
+    sourceAssociate: seller._id,
+    sourceAssociateCode: seller.memberCode,
+    booking: booking._id,
+    bookingCode: booking.code,
+    payment: payment._id,
+    basis: { rate: 0, base: payment.commissionBase },
+    note: `moved into own ${booking.leg} leg`
+  });
+
+  return { matching };
+};
+
 /** onPaymentReceived that never throws — the payment has already committed. */
 const settlePayment = async (paymentId) => {
   try {
@@ -215,7 +278,7 @@ const settlePayment = async (paymentId) => {
  *     clawed back from the other booking (reconcile reports it).
  */
 const reverseBooking = async (bookingId, reason = 'Booking cancelled') => {
-  const booking = await PlotBooking.findById(bookingId).select('_id code associate').lean();
+  const booking = await PlotBooking.findById(bookingId).select('_id code associate leg').lean();
   if (!booking) return { reversed: 0 };
 
   const rows = await PlotCommission.find({
@@ -283,8 +346,7 @@ const reverseBooking = async (bookingId, reason = 'Booking cancelled') => {
     try {
       const seller = await loadSeller(booking.associate);
       if (seller && (rated > 0 || whole > 0)) {
-        const ordered = await loadAncestorChain(seller);
-        for (const { ancestor, side } of resolveLegSides(seller, ordered)) {
+        for (const { ancestor, side } of await legChain(seller, booking.leg)) {
           await PlotNetwork.updateOne(
             { associate: ancestor._id },
             [
@@ -311,4 +373,4 @@ const reverseBooking = async (bookingId, reason = 'Booking cancelled') => {
   return { reversed };
 };
 
-module.exports = { onPaymentReceived, settlePayment, reverseBooking };
+module.exports = { onPaymentReceived, settlePayment, reverseBooking, postOwnLegForPayment };

@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 const { bindModel } = require('../../utils/businessContext');
 const { BUSINESSES } = require('../../config/business');
 const { BOOKING_STATUSES, PAYMENT_PLANS } = require('../../config/plotConfig');
+const { POSITIONS } = require('../../config/constants');
 
 /**
  * A plot sold to a client, credited to an associate. Its instalments live in
@@ -18,6 +19,10 @@ const bookingSchema = new mongoose.Schema(
     // climbs their upline. Must be approved and placed at the time of sale.
     associate: { type: mongoose.Schema.Types.ObjectId, ref: 'Associate', required: true, index: true },
     associateCode: { type: String, required: true },
+    // Optional: the sale is placed in the associate's own Left or Right leg,
+    // so its business counts toward their own matching (and still flows up).
+    // null = upline only, the original behaviour.
+    leg: { type: String, enum: [...Object.values(POSITIONS), null], default: null },
 
     plan: { type: String, enum: Object.values(PAYMENT_PLANS), required: true },
     price: { type: Number, required: true, min: 0 },

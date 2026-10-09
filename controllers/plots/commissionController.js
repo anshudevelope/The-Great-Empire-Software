@@ -112,11 +112,14 @@ exports.listSummary = async (req, res, next) => {
   }
 };
 
-// Live plot sales credited to anyone in the leg headed by `childId`.
-const legSales = async (childId) => {
-  if (!childId) return 0;
+// Live plot sales in one leg: those credited to anyone in the leg headed by
+// `childId`, plus the associate's own sales placed directly in that leg.
+const legSales = async (associateId, childId, side) => {
+  const live = { status: { $ne: BOOKING_STATUSES.CANCELLED } };
+  const own = await PlotBooking.countDocuments({ ...live, associate: associateId, leg: side });
+  if (!childId) return own;
   const members = [childId, ...(await Associate.find({ ancestors: childId }).distinct('_id'))];
-  return PlotBooking.countDocuments({ associate: { $in: members }, status: { $ne: BOOKING_STATUSES.CANCELLED } });
+  return own + (await PlotBooking.countDocuments({ ...live, associate: { $in: members } }));
 };
 
 // One associate's plot position — for the associate detail / tree hover card.
@@ -138,8 +141,8 @@ exports.getAssociateSummary = async (req, res, next) => {
           }
         }
       ]),
-      legSales(node.leftChild),
-      legSales(node.rightChild)
+      legSales(id, node.leftChild, 'Left'),
+      legSales(id, node.rightChild, 'Right')
     ]);
     res.status(200).json({
       success: true,

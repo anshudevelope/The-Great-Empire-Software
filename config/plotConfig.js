@@ -8,6 +8,13 @@
 // (direct) and up their upline (matching), on every payment as it is received.
 const PLOT_COMMISSION = { direct: 0.05, matching: 0.05 };
 
+// Placing a sale in the credited associate's OWN left or right leg (chosen per
+// sale, optional). The business then counts in that associate's own leg —
+// so they build their own matching — and still flows up to their upline as
+// usual. They earn direct AND matching on such sales. Off → every sale goes
+// to the upline only, as before.
+const PLOT_SELF_LEG = { enabled: true };
+
 // Deductions on a plot payout, as a share of the gross. Frozen onto each payout
 // when it is generated.
 const PLOT_PAYOUT = { adminChargePct: 0.05, tdsPct: 0.05 };
@@ -64,6 +71,7 @@ const MAX_PLOTS_PER_CALL = 1000;
 // but the list is explicit so a future server-only setting never leaks.
 const publicPlotConfig = () => ({
   commission: PLOT_COMMISSION,
+  selfLeg: PLOT_SELF_LEG,
   payout: { adminChargePct: PLOT_PAYOUT.adminChargePct, tdsPct: PLOT_PAYOUT.tdsPct },
   rating: PLOT_RATING,
   payment: PLOT_PAYMENT,
@@ -75,6 +83,7 @@ const publicPlotConfig = () => ({
 
 module.exports = {
   PLOT_COMMISSION,
+  PLOT_SELF_LEG,
   PLOT_PAYOUT,
   PLOT_RATING,
   PAYMENT_PLANS,

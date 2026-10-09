@@ -7,14 +7,15 @@ const PlotPayment = require('../../models/plots/Payment');
 const { record } = require('../../services/auditService');
 const { withTransaction } = require('../../utils/transaction');
 const { streamCsv } = require('../../utils/csv');
-const { ROLES, STATUSES, TREE_STATUSES, PAYMENT_MODES } = require('../../config/constants');
+const { ROLES, STATUSES, TREE_STATUSES, PAYMENT_MODES, POSITIONS } = require('../../config/constants');
 const {
   RECORD_STATUSES,
   PLOT_STATUSES,
   BOOKING_STATUSES,
   INSTALMENT_STATUSES,
   PAYMENT_PLANS,
-  PLOT_RATING
+  PLOT_RATING,
+  PLOT_SELF_LEG
 } = require('../../config/plotConfig');
 const { buildSchedule, validatePlan } = require('../../services/plots/scheduleService');
 const { settlePayment, reverseBooking } = require('../../services/plots/commissionService');
@@ -208,6 +209,13 @@ exports.createBooking = async (req, res, next) => {
       throw httpError('Associate must be approved and placed in the tree.');
     }
 
+    // Optional: place the sale in the associate's own Left / Right leg.
+    const leg = req.body.leg || null;
+    if (leg !== null) {
+      if (!PLOT_SELF_LEG.enabled) throw httpError('Placing a sale in an associate\'s own leg is not enabled.');
+      if (![POSITIONS.LEFT, POSITIONS.RIGHT].includes(leg)) throw httpError('Leg must be Left or Right.');
+    }
+
     const price = plot.totalPrice;
     const plan = planInput(req.body, price);
     const bookedOn = bookedOnOf(req.body.bookedOn);
@@ -240,6 +248,7 @@ exports.createBooking = async (req, res, next) => {
             client: client._id,
             associate: associate._id,
             associateCode: associate.memberCode,
+            leg,
             ...plan,
             emiAmount,
             price,
@@ -293,7 +302,7 @@ exports.createBooking = async (req, res, next) => {
       targetType: 'PlotBooking',
       target: booking._id,
       targetCode: booking.code,
-      after: { plot: plot.code, client: client.code, associate: associate.memberCode, price, plan: plan.plan }
+      after: { plot: plot.code, client: client.code, associate: associate.memberCode, leg, price, plan: plan.plan }
     });
 
     res.status(201).json({
