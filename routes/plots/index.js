@@ -67,6 +67,7 @@ commissionRouter.use(plotAdminOnly);
 commissionRouter.get('/ledger', commission.listLedger);
 commissionRouter.get('/summary', commission.listSummary);
 commissionRouter.get('/summary/:id', commission.getAssociateSummary);
+commissionRouter.get('/tree/:id', commission.getPlotTree);
 
 commissionRouter.get('/payouts', commission.listPayouts);
 commissionRouter.post('/payouts', commission.generatePayout);

@@ -114,46 +114,114 @@ exports.listSummary = async (req, res, next) => {
 
 // Live plot sales in one leg: those credited to anyone in the leg headed by
 // `childId`, plus the associate's own sales placed directly in that leg.
-const legSales = async (associateId, childId, side) => {
-  const live = { status: { $ne: BOOKING_STATUSES.CANCELLED } };
-  const own = await PlotBooking.countDocuments({ ...live, associate: associateId, leg: side });
-  if (!childId) return own;
-  const members = [childId, ...(await Associate.find({ ancestors: childId }).distinct('_id'))];
-  return own + (await PlotBooking.countDocuments({ ...live, associate: { $in: members } }));
+const legFilter = async (associateId, childId, side) => {
+  const own = { associate: associateId, leg: side };
+  const members = childId ? [childId, ...(await Associate.find({ ancestors: childId }).distinct('_id'))] : [];
+  return {
+    status: { $ne: BOOKING_STATUSES.CANCELLED },
+    $or: members.length ? [own, { associate: { $in: members } }] : [own]
+  };
 };
 
-// One associate's plot position — for the associate detail / tree hover card.
+const legSales = async (associateId, childId, side) => PlotBooking.countDocuments(await legFilter(associateId, childId, side));
+
+// One associate's plot position: carry, leg volume and sales, earned and paid.
+const summaryOf = async (id, node) => {
+  const [network, money, salesLeft, salesRight] = await Promise.all([
+    PlotNetwork.findOne({ associate: id }).lean(),
+    PlotCommission.aggregate([
+      { $match: { beneficiary: id, ...moneyRows } },
+      {
+        $group: {
+          _id: null,
+          unpaid: { $sum: { $cond: [{ $eq: ['$payout', null] }, '$amount', 0] } },
+          paid: { $sum: { $cond: [{ $ne: ['$payout', null] }, '$amount', 0] } }
+        }
+      }
+    ]),
+    legSales(id, node.leftChild, 'Left'),
+    legSales(id, node.rightChild, 'Right')
+  ]);
+  return {
+    carry: { left: round2(network?.carryLeft), right: round2(network?.carryRight) },
+    volume: { left: round2(network?.totalLeftVolume), right: round2(network?.totalRightVolume) },
+    ratedVolume: { left: round2(network?.totalLeftRatedVolume), right: round2(network?.totalRightRatedVolume) },
+    sales: { left: salesLeft, right: salesRight },
+    earned: { direct: round2(network?.directEarned), matching: round2(network?.matchingEarned) },
+    unpaid: round2(money[0]?.unpaid || 0),
+    paid: round2(money[0]?.paid || 0)
+  };
+};
+
+// For the associate detail / tree hover card.
 exports.getAssociateSummary = async (req, res, next) => {
   try {
     assertId(req.params.id, 'associate');
     const id = oid(req.params.id);
     const node = await Associate.findById(id).select('leftChild rightChild').lean();
     if (!node) throw httpError('Associate not found.', 404);
-    const [network, money, salesLeft, salesRight] = await Promise.all([
-      PlotNetwork.findOne({ associate: id }).lean(),
-      PlotCommission.aggregate([
-        { $match: { beneficiary: id, ...moneyRows } },
-        {
-          $group: {
-            _id: null,
-            unpaid: { $sum: { $cond: [{ $eq: ['$payout', null] }, '$amount', 0] } },
-            paid: { $sum: { $cond: [{ $ne: ['$payout', null] }, '$amount', 0] } }
-          }
-        }
-      ]),
-      legSales(id, node.leftChild, 'Left'),
-      legSales(id, node.rightChild, 'Right')
+    res.status(200).json({ success: true, data: await summaryOf(id, node) });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// One leg of the plot tree: who heads it, and every live sale counted in it.
+const legOf = async (id, childId, side) => {
+  const [head, bookings] = await Promise.all([
+    childId ? Associate.findById(childId).select('memberCode fullName status profileImage').lean() : null,
+    PlotBooking.find(await legFilter(id, childId, side))
+      .select('code plot project client associate associateCode leg plan price paidTotal status bookedOn')
+      .populate('plot', 'code name')
+      .populate('project', 'name')
+      .populate('client', 'code fullName')
+      .populate('associate', 'fullName')
+      .sort({ bookedOn: -1, createdAt: -1 })
+      .lean()
+  ]);
+  return {
+    head,
+    bookings: bookings.map((b) => ({
+      _id: b._id,
+      code: b.code,
+      plot: b.plot,
+      project: b.project,
+      client: b.client,
+      seller: { _id: b.associate?._id, memberCode: b.associateCode, fullName: b.associate?.fullName || '' },
+      // Sold by this associate and placed in their own leg, vs. sold below them.
+      own: String(b.associate?._id) === String(id),
+      plan: b.plan,
+      price: round2(b.price),
+      paidTotal: round2(b.paidTotal),
+      status: b.status,
+      bookedOn: b.bookedOn
+    }))
+  };
+};
+
+/**
+ * One associate's plot tree: their own Left/Right leg, and every live plot
+ * sale counted in each — their own sales placed in that leg plus sales by
+ * anyone in the downline under it.
+ */
+exports.getPlotTree = async (req, res, next) => {
+  try {
+    assertId(req.params.id, 'associate');
+    const id = oid(req.params.id);
+    const node = await Associate.findById(id).select('memberCode fullName status profileImage leftChild rightChild').lean();
+    if (!node) throw httpError('Associate not found.', 404);
+    const [summary, left, right] = await Promise.all([
+      summaryOf(id, node),
+      legOf(id, node.leftChild, 'Left'),
+      legOf(id, node.rightChild, 'Right')
     ]);
     res.status(200).json({
       success: true,
       data: {
-        carry: { left: round2(network?.carryLeft), right: round2(network?.carryRight) },
-        volume: { left: round2(network?.totalLeftVolume), right: round2(network?.totalRightVolume) },
-        ratedVolume: { left: round2(network?.totalLeftRatedVolume), right: round2(network?.totalRightRatedVolume) },
-        sales: { left: salesLeft, right: salesRight },
-        earned: { direct: round2(network?.directEarned), matching: round2(network?.matchingEarned) },
-        unpaid: round2(money[0]?.unpaid || 0),
-        paid: round2(money[0]?.paid || 0)
+        associate: { _id: node._id, memberCode: node.memberCode, fullName: node.fullName, status: node.status, profileImage: node.profileImage },
+        summary,
+        left,
+        right
       }
     });
   } catch (error) {
