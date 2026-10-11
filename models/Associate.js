@@ -10,8 +10,9 @@ const associateSchema = new mongoose.Schema(
         fatherOrHusbandName: { type: String, default: '', trim: true },
         maritalStatus: { type: String, enum: ['Single', 'Married', 'Divorced', 'Widowed'], default: 'Single' },
         gender: { type: String, enum: ['Male', 'Female', 'Other'], required: true },
-        // Not unique: up to MAX_ASSOCIATES_PER_PHONE accounts may share a number.
-        // The cap is enforced in associateController, not by an index.
+        // Not unique: up to MAX_ASSOCIATES_PER_PHONE (config/business.js, per
+        // business) accounts may share a number. The cap is enforced in
+        // associateController, not by an index.
         phone: { type: String, required: true, trim: true },
         email: { type: String, required: true, unique: true, lowercase: true, trim: true },
 

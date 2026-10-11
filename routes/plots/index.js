@@ -73,6 +73,7 @@ commissionRouter.get('/tree/:id', commission.getPlotTree);
 
 commissionRouter.get('/payouts', commission.listPayouts);
 commissionRouter.post('/payouts', commission.generatePayout);
+commissionRouter.get('/payouts/next', commission.getNextPayoutPeriod);
 commissionRouter.get('/payouts/:id', commission.getPayout);
 commissionRouter.post('/payouts/:id/finalize', commission.finalizePayout);
 commissionRouter.post('/payouts/:id/cancel', commission.cancelPayout);

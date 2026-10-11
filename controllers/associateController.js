@@ -28,12 +28,11 @@ const {
   POSITIONS,
   TREE_STATUSES,
   REFERRAL_STATUSES,
-  MAX_ASSOCIATES_PER_PHONE,
   ADMIN_UPDATABLE_FIELDS,
   SELF_UPDATABLE_FIELDS,
   pickAllowedFields
 } = require('../config/constants');
-const { BUSINESSES, BUSINESS_TIER } = require('../config/business');
+const { BUSINESSES, BUSINESS_TIER, MAX_ASSOCIATES_PER_PHONE } = require('../config/business');
 const { currentBusiness, runInBusiness } = require('../utils/businessContext');
 
 // Matches the admin form's validation. Associates choosing their own password
@@ -66,18 +65,18 @@ const collectUploads = (req) => {
   return { profileImage, documents };
 };
 
-// A phone may be shared by up to MAX_ASSOCIATES_PER_PHONE accounts. `excludeId`
-// leaves the member being edited out of the count, so re-saving their own
-// number never trips the cap.
+// A phone may be shared by up to MAX_ASSOCIATES_PER_PHONE accounts in the
+// active business (config/business.js; null = no limit). `excludeId` leaves the
+// member being edited out of the count, so re-saving their own number never
+// trips the cap.
 const assertPhoneAvailable = async (phone, excludeId = null) => {
+  const max = MAX_ASSOCIATES_PER_PHONE[currentBusiness()];
+  if (max === null || max === undefined) return;
   const filter = { phone: String(phone).trim() };
   if (excludeId) filter._id = { $ne: excludeId };
   const count = await Associate.countDocuments(filter);
-  if (count >= MAX_ASSOCIATES_PER_PHONE) {
-    throw httpError(
-      `This phone number is already used by ${MAX_ASSOCIATES_PER_PHONE} associates — the maximum allowed.`,
-      400
-    );
+  if (count >= max) {
+    throw httpError(`This phone number is already used by ${max} associates — the maximum allowed.`, 400);
   }
 };
 

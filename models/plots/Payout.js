@@ -35,6 +35,9 @@ const plotPayoutSchema = new mongoose.Schema(
   {
     payoutNo: { type: String, required: true, unique: true },
     status: { type: String, enum: Object.values(PAYOUT_STATUSES), default: PAYOUT_STATUSES.DRAFT },
+    // Labels the period only, like registration payouts: what is paid is every
+    // unpaid row up to periodEnd. null on payouts made before it existed.
+    periodStart: { type: Date, default: null },
     periodEnd: { type: Date, required: true },
     // Charges frozen at generation; changing plotConfig never moves a payout.
     rates: {

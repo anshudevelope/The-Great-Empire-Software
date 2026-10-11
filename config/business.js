@@ -31,4 +31,20 @@ const DB_SUFFIX = {
   [BUSINESSES.T2]: '_t2'
 };
 
-module.exports = { BUSINESSES, BUSINESS_LIST, BUSINESS_LABELS, BUSINESS_TIER, MEMBER_CODE_START, DB_SUFFIX };
+// How many associate IDs may share one phone number, per business. Lets one
+// person run a few IDs from a single number; email stays unique — it is the
+// login identity. null = no limit.
+const MAX_ASSOCIATES_PER_PHONE = {
+  [BUSINESSES.T1]: 3,
+  [BUSINESSES.T2]: null
+};
+
+module.exports = {
+  BUSINESSES,
+  BUSINESS_LIST,
+  BUSINESS_LABELS,
+  BUSINESS_TIER,
+  MEMBER_CODE_START,
+  DB_SUFFIX,
+  MAX_ASSOCIATES_PER_PHONE
+};

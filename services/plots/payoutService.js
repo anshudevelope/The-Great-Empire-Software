@@ -77,11 +77,41 @@ const totalsOf = (lines) => {
   };
 };
 
-const generateDraft = async ({ periodEnd, actor, note = '' }) => {
+const DAY_MS = 24 * 60 * 60 * 1000;
+const startOfDay = (d) => {
+  const s = new Date(d);
+  s.setHours(0, 0, 0, 0);
+  return s;
+};
+
+/**
+ * Where the next closing should start: the day after the last finalized plot
+ * payout, else the day of the oldest unpaid commission, else today. A default
+ * only — the admin may move it.
+ */
+const nextPeriod = async () => {
+  const previous = await PlotPayout.findOne({ status: PAYOUT_STATUSES.FINALIZED })
+    .sort({ periodEnd: -1 })
+    .select('payoutNo periodStart periodEnd finalizedAt')
+    .lean();
+  if (previous) return { periodStart: startOfDay(previous.periodEnd.getTime() + DAY_MS), previous };
+
+  const oldest = await PlotCommission.findOne({ payout: null, amount: { $ne: 0 } }).sort({ createdAt: 1 }).select('createdAt').lean();
+  return { periodStart: startOfDay(oldest ? oldest.createdAt : new Date()), previous: null };
+};
+
+const generateDraft = async ({ periodStart, periodEnd, actor, note = '' }) => {
   const end = periodEnd ? new Date(periodEnd) : new Date();
-  if (Number.isNaN(end.getTime())) throw httpError('Invalid period end date.');
+  if (Number.isNaN(end.getTime())) throw httpError('Invalid close date.');
   // Include the whole of the chosen day.
   end.setHours(23, 59, 59, 999);
+
+  // The start LABELS the period; it never selects anything. Rows are chosen by
+  // "unpaid, up to the close date", so moving the start can neither pay a row
+  // twice nor skip one.
+  const start = periodStart ? startOfDay(periodStart) : (await nextPeriod()).periodStart;
+  if (Number.isNaN(start.getTime())) throw httpError('Invalid start date.');
+  if (start > end) throw httpError('Start date cannot be after the close date.');
 
   if (await PlotPayout.exists({ status: PAYOUT_STATUSES.DRAFT })) {
     throw httpError('A draft plot payout already exists. Finalize or discard it first.', 409);
@@ -94,6 +124,7 @@ const generateDraft = async ({ periodEnd, actor, note = '' }) => {
   return PlotPayout.create({
     payoutNo: await nextCode('payout'),
     status: PAYOUT_STATUSES.DRAFT,
+    periodStart: start,
     periodEnd: end,
     rates,
     lines,
@@ -161,4 +192,4 @@ const discard = async (payoutId) => {
   await payout.deleteOne();
 };
 
-module.exports = { generateDraft, finalize, cancel, discard, computeLines };
+module.exports = { generateDraft, finalize, cancel, discard, computeLines, nextPeriod };

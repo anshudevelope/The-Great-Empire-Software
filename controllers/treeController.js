@@ -1,5 +1,6 @@
 const Associate = require('../models/Associate');
-const { ROLES, TREE_STATUSES, TIERS } = require('../config/constants');
+const Referral = require('../models/Referral');
+const { ROLES, TREE_STATUSES, TIERS, REFERRAL_STATUSES } = require('../config/constants');
 const { BUSINESS_TIER } = require('../config/business');
 const { currentBusiness } = require('../utils/businessContext');
 
@@ -66,6 +67,19 @@ const legCountsFor = async (nodes) => {
 };
 
 /**
+ * Each member's joining package: what was paid on their own registration in the
+ * active business (cancelled referrals left out). The tooltip's "Package" line.
+ * One aggregation for every node in the response.
+ */
+const packagesFor = async (nodes) => {
+  const rows = await Referral.aggregate([
+    { $match: { member: { $in: nodes.map((n) => n._id) }, status: { $ne: REFERRAL_STATUSES.CANCELLED } } },
+    { $group: { _id: '$member', amount: { $sum: '$amountPaid' } } }
+  ]);
+  return new Map(rows.map((r) => [String(r._id), Math.round((r.amount || 0) * 100) / 100]));
+};
+
+/**
  * The tooltip's business table.
  *
  * The member's carry and volume fields belong to the active business's tier:
@@ -91,7 +105,7 @@ const businessOf = (a, legs) => {
   };
 };
 
-const toNode = (a, parentCode = null, legs = null) => ({
+const toNode = (a, parentCode = null, legs = null, packages = null) => ({
   _id: a._id,
   memberCode: a.memberCode,
   // Shown beside Sponsor in the node tooltip: the two differ whenever
@@ -118,6 +132,8 @@ const toNode = (a, parentCode = null, legs = null) => ({
   isSpillover: Boolean(a.sponsorId && a.parentId && String(a.sponsorId) !== String(a.parentId)),
   // Per-leg carry and volume — the tooltip's business table.
   business: businessOf(a, legs),
+  // Joining amount in the active business (see packagesFor).
+  packageAmount: packages?.get(String(a._id)) ?? 0,
   // What this member has earned. Read from the cached totals, which the engine
   // maintains (reversals included) and verify:commissions checks against the
   // ledger — so it is net of anything taken back.
@@ -172,11 +188,11 @@ exports.getBinaryTree = async (req, res, next) => {
     };
 
     // One aggregation for every visible node's leg counts, before assembly.
-    const legCounts = await legCountsFor(nodes);
+    const [legCounts, packages] = await Promise.all([legCountsFor(nodes), packagesFor(nodes)]);
 
     const build = (node) => {
       if (!node) return null;
-      const out = toNode(node, parentCodeOf(node), legCounts.get(String(node._id)));
+      const out = toNode(node, parentCodeOf(node), legCounts.get(String(node._id)), packages);
       const left = node.leftChild && byId.get(String(node.leftChild));
       const right = node.rightChild && byId.get(String(node.rightChild));
       out.left = build(left);
@@ -245,10 +261,10 @@ exports.getSponsorTree = async (req, res, next) => {
     }
 
     const allNodes = [root, ...[...childrenOf.values()].flat()];
-    const legCounts = await legCountsFor(allNodes);
+    const [legCounts, packages] = await Promise.all([legCountsFor(allNodes), packagesFor(allNodes)]);
 
     const build = (node) => {
-      const out = toNode(node, null, legCounts.get(String(node._id)));
+      const out = toNode(node, null, legCounts.get(String(node._id)), packages);
       out.children = (childrenOf.get(String(node._id)) || []).map(build);
       out.hasMore = out.children.length === 0 && node.directCount > 0;
       return out;
@@ -287,13 +303,13 @@ exports.getDirects = async (req, res, next) => {
     const parents = await Associate.find({ _id: { $in: parentIds } }).select('memberCode fullName').lean();
     const parentById = new Map(parents.map((p) => [String(p._id), p]));
 
-    const legCounts = await legCountsFor(directs);
+    const [legCounts, packages] = await Promise.all([legCountsFor(directs), packagesFor(directs)]);
 
     return res.status(200).json({
       success: true,
       count: directs.length,
       data: directs.map((d) => ({
-        ...toNode(d, null, legCounts.get(String(d._id))),
+        ...toNode(d, null, legCounts.get(String(d._id)), packages),
         placedUnder: d.parentId
           ? {
               memberCode: parentById.get(String(d.parentId))?.memberCode || null,
@@ -330,8 +346,8 @@ exports.getUpline = async (req, res, next) => {
     const ancestors = await Associate.find({ _id: { $in: chain } }).select(NODE_FIELDS).lean();
     const byId = new Map(ancestors.map((a) => [String(a._id), a]));
 
-    const legCounts = await legCountsFor([node, ...ancestors]);
-    const withLegs = (a) => toNode(a, null, legCounts.get(String(a._id)));
+    const [legCounts, packages] = await Promise.all([legCountsFor([node, ...ancestors]), packagesFor([node, ...ancestors])]);
+    const withLegs = (a) => toNode(a, null, legCounts.get(String(a._id)), packages);
 
     return res.status(200).json({
       success: true,

@@ -258,9 +258,23 @@ exports.getPayout = async (req, res, next) => {
   }
 };
 
+// The Generate form's suggested start, and the last closing it follows on from.
+exports.getNextPayoutPeriod = async (req, res, next) => {
+  try {
+    res.status(200).json({ success: true, data: await payoutService.nextPeriod() });
+  } catch (error) {
+    next(error);
+  }
+};
+
 exports.generatePayout = async (req, res, next) => {
   try {
-    const payout = await payoutService.generateDraft({ periodEnd: req.body.periodEnd, actor: req.user, note: req.body.note || '' });
+    const payout = await payoutService.generateDraft({
+      periodStart: req.body.periodStart,
+      periodEnd: req.body.periodEnd,
+      actor: req.user,
+      note: req.body.note || ''
+    });
     await record(req, { action: PLOT_ACTIONS.PAYOUT_GENERATED, targetType: 'PlotPayout', target: payout._id, targetCode: payout.payoutNo, after: payout.totals });
     res.status(201).json({ success: true, message: `Draft ${payout.payoutNo} generated.`, data: payout });
   } catch (error) {
