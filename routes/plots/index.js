@@ -53,12 +53,14 @@ salesRouter.get('/bookings/schedule-preview', sales.previewSchedule);
 salesRouter.get('/bookings', sales.listBookings);
 salesRouter.post('/bookings', sales.createBooking);
 salesRouter.get('/bookings/:id', sales.getBooking);
+salesRouter.get('/bookings/:id/payment-preview', sales.previewPayment);
+salesRouter.post('/bookings/:id/payments', sales.recordPayment);
+salesRouter.get('/bookings/:id/statement', sales.getStatement);
 salesRouter.post('/bookings/:id/cancel', sales.cancelBooking);
 
 salesRouter.get('/payments', sales.listPayments);
 salesRouter.get('/payments/dues', sales.listDues);
 salesRouter.get('/payments/:id/receipt', sales.getReceipt);
-salesRouter.post('/payments/:id/receive', sales.receivePayment);
 
 // --- Plot commission & payouts -----------------------------------------------
 const commissionRouter = express.Router();

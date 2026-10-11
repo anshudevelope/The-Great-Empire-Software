@@ -17,10 +17,10 @@ require('dotenv').config();
 const mongoose = require('mongoose');
 const { BUSINESSES } = require('../config/business');
 const { POSITIONS } = require('../config/constants');
-const { BOOKING_STATUSES, INSTALMENT_STATUSES } = require('../config/plotConfig');
+const { BOOKING_STATUSES } = require('../config/plotConfig');
 const { runInBusiness } = require('../utils/businessContext');
 const PlotBooking = require('../models/plots/Booking');
-const PlotPayment = require('../models/plots/Payment');
+const PlotReceipt = require('../models/plots/Receipt');
 const PlotNetwork = require('../models/plots/Network');
 const { postOwnLegForPayment } = require('../services/plots/commissionService');
 
@@ -48,12 +48,12 @@ const run = async () => {
     }
     console.log(`${code} → ${booking.associateCode}'s ${leg} leg`);
 
-    const paid = await PlotPayment.find({ booking: booking._id, status: INSTALMENT_STATUSES.PAID }).sort({ seq: 1 }).lean();
-    for (const p of paid) {
-      const result = await postOwnLegForPayment(p._id);
-      const matched = (result.matching || []).reduce((sum, r) => sum + r.amount, 0);
+    const receipts = await PlotReceipt.find({ booking: booking._id }).sort({ paidOn: 1, createdAt: 1 }).lean();
+    for (const r of receipts) {
+      const result = await postOwnLegForPayment(r._id);
+      const matched = (result.matching || []).reduce((sum, row) => sum + row.amount, 0);
       console.log(
-        `  ${p.receiptNo} ₹${p.paidAmount} (${p.ratingPct}%): ${result.skipped ? `skipped — ${result.skipped}` : `moved${matched ? `, matching ₹${matched}` : ''}`}`
+        `  ${r.receiptNo} ₹${r.amount} (${r.ratingPct}%): ${result.skipped ? `skipped — ${result.skipped}` : `moved${matched ? `, matching ₹${matched}` : ''}`}`
       );
     }
 

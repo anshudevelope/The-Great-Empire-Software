@@ -4,6 +4,7 @@ const Client = require('../../models/plots/Client');
 const Plot = require('../../models/plots/Plot');
 const Booking = require('../../models/plots/Booking');
 const PlotPayment = require('../../models/plots/Payment');
+const PlotReceipt = require('../../models/plots/Receipt');
 const { record } = require('../../services/auditService');
 const { withTransaction } = require('../../utils/transaction');
 const { streamCsv } = require('../../utils/csv');
@@ -13,11 +14,16 @@ const {
   PLOT_STATUSES,
   BOOKING_STATUSES,
   INSTALMENT_STATUSES,
+  INSTALMENT_KINDS,
+  OPEN_INSTALMENT_STATUSES,
+  PAYMENT_ADJUSTMENTS,
   PAYMENT_PLANS,
   PLOT_RATING,
-  PLOT_SELF_LEG
+  PLOT_SELF_LEG,
+  PREPAYMENT
 } = require('../../config/plotConfig');
 const { buildSchedule, validatePlan } = require('../../services/plots/scheduleService');
+const receiptService = require('../../services/plots/receiptService');
 const { settlePayment, reverseBooking } = require('../../services/plots/commissionService');
 const {
   round2,
@@ -27,7 +33,6 @@ const {
   listResponse,
   searchFilter,
   nextCode,
-  nextReceiptNo,
   numberOr,
   PLOT_ACTIONS
 } = require('../../services/plots/helpers');
@@ -270,29 +275,28 @@ exports.createBooking = async (req, res, next) => {
         associate: associate._id
       }));
 
-      let firstPaidId = null;
-      if (payNow) {
-        const first = docs[0];
-        Object.assign(first, {
-          status: INSTALMENT_STATUSES.PAID,
-          paidAmount: first.dueAmount,
-          paidOn: payNow.paidOn ? new Date(payNow.paidOn) : bookedOn,
-          mode: payNow.mode || null,
-          reference: str(payNow.reference),
-          ratingPct: rating,
-          receiptNo: await nextReceiptNo(session),
-          receivedBy: req.user._id,
-          receivedByCode: req.user.memberCode || null
-        });
-        created.paidTotal = first.dueAmount;
-        if (docs.length === 1) created.status = BOOKING_STATUSES.COMPLETED;
-        await created.save({ session });
-      }
+      // create() rather than insertMany so validation runs.
+      await PlotPayment.create(docs, { session, ordered: true });
 
-      // create() rather than insertMany so the commissionBase hook runs.
-      const inserted = await PlotPayment.create(docs, { session, ordered: true });
-      if (payNow) firstPaidId = inserted[0]._id;
-      return { booking: created, paidId: firstPaidId };
+      // Collecting the first instalment on the spot is an ordinary payment of
+      // its amount. pay_ahead covers a plan with no down payment, where the
+      // first EMI falls a month after booking.
+      const receipt = payNow
+        ? await receiptService.recordPayment(
+            {
+              bookingId: created._id,
+              amount: docs[0].dueAmount,
+              paidOn: payNow.paidOn ? new Date(payNow.paidOn) : bookedOn,
+              mode: payNow.mode || null,
+              reference: str(payNow.reference),
+              ratingPct: rating,
+              adjustment: PAYMENT_ADJUSTMENTS.PAY_AHEAD,
+              actor: req.user
+            },
+            session
+          )
+        : null;
+      return { booking: created, paidId: receipt?._id ?? null };
     });
 
     if (paidId) await settlePayment(paidId);
@@ -315,11 +319,18 @@ exports.createBooking = async (req, res, next) => {
   }
 };
 
-// Paid / due / overdue status for one instalment, as the UI shows it.
+// Paid / due / overdue state for one instalment, as the UI shows it.
 const withDueState = (p, today = startOfDay()) => ({
   ...p,
-  overdue: p.status === INSTALMENT_STATUSES.DUE && new Date(p.dueDate) < today
+  remaining: round2(p.dueAmount - p.paidAmount),
+  overdue: OPEN_INSTALMENT_STATUSES.includes(p.status) && new Date(p.dueDate) < today
 });
+
+const endOfToday = () => {
+  const d = new Date();
+  d.setHours(23, 59, 59, 999);
+  return d;
+};
 
 exports.listBookings = async (req, res, next) => {
   try {
@@ -360,16 +371,23 @@ exports.getBooking = async (req, res, next) => {
       .populate('associate', 'memberCode fullName phone email')
       .lean();
     if (!booking) throw httpError('Booking not found.', 404);
-    const schedule = await PlotPayment.find({ booking: booking._id }).sort({ seq: 1 }).lean();
+    const [schedule, receipts] = await Promise.all([
+      PlotPayment.find({ booking: booking._id }).sort({ seq: 1, revision: 1 }).lean(),
+      PlotReceipt.find({ booking: booking._id }).sort({ paidOn: 1, createdAt: 1 }).lean()
+    ]);
     const today = startOfDay();
-    const due = schedule.filter((p) => p.status === INSTALMENT_STATUSES.DUE);
+    const rows = schedule.map((p) => withDueState(p, today));
+    const open = rows.filter((p) => OPEN_INSTALMENT_STATUSES.includes(p.status));
+    const cutoff = endOfToday();
     res.status(200).json({
       success: true,
       data: {
         ...booking,
-        schedule: schedule.map((p) => withDueState(p, today)),
+        schedule: rows,
+        receipts,
         balance: round2(booking.price - booking.paidTotal),
-        nextDue: due[0] ? withDueState(due[0], today) : null
+        dueNow: round2(open.filter((p) => new Date(p.dueDate) <= cutoff).reduce((s, p) => s + p.remaining, 0)),
+        nextDue: open[0] || null
       }
     });
   } catch (error) {
@@ -411,7 +429,7 @@ exports.cancelBooking = async (req, res, next) => {
       await current.save({ session });
 
       await PlotPayment.updateMany(
-        { booking: current._id, status: INSTALMENT_STATUSES.DUE },
+        { booking: current._id, status: { $in: OPEN_INSTALMENT_STATUSES } },
         { $set: { status: INSTALMENT_STATUSES.CANCELLED } },
         { session }
       );
@@ -447,69 +465,70 @@ exports.cancelBooking = async (req, res, next) => {
 // Payments
 // ===========================================================================
 
-/**
- * Receive one instalment, in full. Earlier instalments must be paid first so
- * the schedule is collected in order. The status flip is guarded (due → paid)
- * so a double click cannot receive the same instalment twice.
- */
-exports.receivePayment = async (req, res, next) => {
+const paymentInput = (source) => {
+  const amount = round2(numberOr(source.amount, NaN));
+  if (Number.isNaN(amount)) throw httpError('Amount must be a number.');
+  const paidOn = source.paidOn ? new Date(source.paidOn) : new Date();
+  if (Number.isNaN(paidOn.getTime())) throw httpError('Invalid payment date.');
+  const adjustment = source.adjustment || null;
+  if (adjustment && !Object.values(PAYMENT_ADJUSTMENTS).includes(adjustment)) throw httpError('Unknown way to apply the extra amount.');
+  return { amount, paidOn, adjustment };
+};
+
+// What the Receive form shows before saving. Same maths the payment will use.
+exports.previewPayment = async (req, res, next) => {
   try {
-    assertId(req.params.id, 'payment');
-    const amount = round2(numberOr(req.body.amount, NaN));
-    if (req.body.mode && !PAYMENT_MODES.includes(req.body.mode)) throw httpError('Unknown payment mode.');
-    const ratingPct = ratingOf(req.body.ratingPct);
-    const paidOn = req.body.paidOn ? new Date(req.body.paidOn) : new Date();
-    if (Number.isNaN(paidOn.getTime())) throw httpError('Invalid payment date.');
-
-    const payment = await withTransaction(async (session) => {
-      const row = await PlotPayment.findById(req.params.id).session(session);
-      if (!row) throw httpError('Instalment not found.', 404);
-      if (row.status !== INSTALMENT_STATUSES.DUE) throw httpError('This instalment is not due.', 409);
-      if (amount !== row.dueAmount) throw httpError(`Amount must equal the instalment due (₹${row.dueAmount}).`);
-
-      const earlier = await PlotPayment.exists({ booking: row.booking, status: INSTALMENT_STATUSES.DUE, seq: { $lt: row.seq } }).session(session);
-      if (earlier) throw httpError('Receive the earlier instalments first.', 409);
-
-      const booking = await Booking.findById(row.booking).session(session);
-      if (!booking || booking.status !== BOOKING_STATUSES.ACTIVE) throw httpError('This booking is not active.', 409);
-
-      row.set({
-        status: INSTALMENT_STATUSES.PAID,
-        paidAmount: amount,
-        paidOn,
-        mode: req.body.mode || null,
-        reference: str(req.body.reference),
-        notes: typeof req.body.notes === 'string' ? req.body.notes : '',
-        ratingPct,
-        receiptNo: await nextReceiptNo(session, paidOn),
-        receivedBy: req.user._id,
-        receivedByCode: req.user.memberCode || null
-      });
-      await row.save({ session });
-
-      booking.paidTotal = round2(booking.paidTotal + amount);
-      const stillDue = await PlotPayment.exists({ booking: booking._id, status: INSTALMENT_STATUSES.DUE }).session(session);
-      if (!stillDue) booking.status = BOOKING_STATUSES.COMPLETED;
-      await booking.save({ session });
-      return row;
-    });
-
-    await settlePayment(payment._id);
-    await record(req, {
-      action: PLOT_ACTIONS.PAYMENT_RECEIVED,
-      targetType: 'PlotPayment',
-      target: payment._id,
-      targetCode: payment.receiptNo,
-      after: { amount: payment.paidAmount, ratingPct: payment.ratingPct }
-    });
-
-    res.status(200).json({ success: true, message: `Payment received — receipt ${payment.receiptNo}.`, data: payment });
+    assertId(req.params.id, 'booking');
+    const data = await receiptService.previewPayment({ bookingId: req.params.id, ...paymentInput(req.query) });
+    res.status(200).json({ success: true, data });
   } catch (error) {
     next(error);
   }
 };
 
-const paymentPopulate = (q) =>
+/**
+ * Record a payment of any amount up to the balance: what is due is cleared
+ * first, oldest first; any extra is applied the way the admin chose. One
+ * transaction; commission on the receipt runs after commit.
+ */
+exports.recordPayment = async (req, res, next) => {
+  try {
+    assertId(req.params.id, 'booking');
+    const input = paymentInput(req.body);
+    if (req.body.mode && !PAYMENT_MODES.includes(req.body.mode)) throw httpError('Unknown payment mode.');
+    const ratingPct = ratingOf(req.body.ratingPct);
+
+    const receipt = await withTransaction((session) =>
+      receiptService.recordPayment(
+        {
+          bookingId: req.params.id,
+          ...input,
+          mode: req.body.mode || null,
+          reference: str(req.body.reference),
+          notes: typeof req.body.notes === 'string' ? req.body.notes : '',
+          ratingPct,
+          actor: req.user
+        },
+        session
+      )
+    );
+
+    await settlePayment(receipt._id);
+    await record(req, {
+      action: PLOT_ACTIONS.PAYMENT_RECEIVED,
+      targetType: 'PlotReceipt',
+      target: receipt._id,
+      targetCode: receipt.receiptNo,
+      after: { amount: receipt.amount, ratingPct: receipt.ratingPct, adjustment: receipt.adjustment?.type ?? null }
+    });
+
+    res.status(201).json({ success: true, message: `Payment received — receipt ${receipt.receiptNo}.`, data: receipt });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const salePopulate = (q) =>
   q
     .populate('booking', 'code plan status')
     .populate('plot', 'code name')
@@ -517,11 +536,17 @@ const paymentPopulate = (q) =>
     .populate('client', 'code fullName mobile')
     .populate('associate', 'memberCode fullName');
 
-// Payment history: paid receipts by default; filters by date, kind, project.
+const KIND_TEXT = { full: 'Full payment', down: 'Down payment' };
+const appliedTo = (r) =>
+  r.allocations
+    .map((a) => (a.kind === PREPAYMENT ? 'Prepayment' : a.kind === INSTALMENT_KINDS.EMI ? `EMI ${a.seq}` : KIND_TEXT[a.kind]))
+    .join(', ');
+
+// Payment history: one row per receipt; filters by date, kind, project.
 exports.listPayments = async (req, res, next) => {
   try {
-    const filter = { status: Object.values(INSTALMENT_STATUSES).includes(req.query.status) ? req.query.status : INSTALMENT_STATUSES.PAID };
-    if (req.query.kind) filter.kind = req.query.kind;
+    const filter = {};
+    if (req.query.kind) filter['allocations.kind'] = req.query.kind;
     if (req.query.project) {
       assertId(req.query.project, 'project');
       filter.project = oid(req.query.project);
@@ -530,39 +555,37 @@ exports.listPayments = async (req, res, next) => {
       assertId(req.query.booking, 'booking');
       filter.booking = oid(req.query.booking);
     }
-    const dateField = filter.status === INSTALMENT_STATUSES.PAID ? 'paidOn' : 'dueDate';
     if (req.query.from || req.query.to) {
-      filter[dateField] = {};
-      if (req.query.from) filter[dateField].$gte = new Date(req.query.from);
+      filter.paidOn = {};
+      if (req.query.from) filter.paidOn.$gte = new Date(req.query.from);
       if (req.query.to) {
         const to = new Date(req.query.to);
         to.setHours(23, 59, 59, 999);
-        filter[dateField].$lte = to;
+        filter.paidOn.$lte = to;
       }
     }
     if (req.query.search) Object.assign(filter, searchFilter(req.query.search, ['receiptNo', 'reference']));
 
     if (req.query.format === 'csv') {
-      const cursor = paymentPopulate(PlotPayment.find(filter).sort({ [dateField]: -1 })).lean().cursor();
+      const cursor = salePopulate(PlotReceipt.find(filter).sort({ paidOn: -1 })).lean().cursor();
       return streamCsv(
         res,
         `plot-payments-${new Date().toISOString().slice(0, 10)}.csv`,
         [
-          { header: 'Receipt No', value: (p) => p.receiptNo || '' },
-          { header: 'Paid On', value: (p) => p.paidOn },
-          { header: 'Booking', value: (p) => p.booking?.code },
-          { header: 'Project', value: (p) => p.project?.name },
-          { header: 'Plot', value: (p) => p.plot?.name },
-          { header: 'Client', value: (p) => p.client?.fullName },
-          { header: 'Client Mobile', value: (p) => p.client?.mobile },
-          { header: 'Associate', value: (p) => p.associate?.memberCode },
-          { header: 'Type', value: (p) => p.kind },
-          { header: 'Due Date', value: (p) => p.dueDate },
-          { header: 'Amount', value: (p) => p.paidAmount || p.dueAmount },
-          { header: 'Rating %', value: (p) => p.ratingPct },
-          { header: 'Mode', value: (p) => p.mode || '' },
-          { header: 'Reference', value: (p) => p.reference || '' },
-          { header: 'Status', value: (p) => p.status }
+          { header: 'Receipt No', value: (r) => r.receiptNo },
+          { header: 'Paid On', value: (r) => r.paidOn },
+          { header: 'Booking', value: (r) => r.booking?.code },
+          { header: 'Project', value: (r) => r.project?.name },
+          { header: 'Plot', value: (r) => r.plot?.name },
+          { header: 'Client', value: (r) => r.client?.fullName },
+          { header: 'Client Mobile', value: (r) => r.client?.mobile },
+          { header: 'Associate', value: (r) => r.associate?.memberCode },
+          { header: 'Applied To', value: appliedTo },
+          { header: 'Adjustment', value: (r) => r.adjustment?.type || '' },
+          { header: 'Amount', value: (r) => r.amount },
+          { header: 'Rating %', value: (r) => r.ratingPct },
+          { header: 'Mode', value: (r) => r.mode || '' },
+          { header: 'Reference', value: (r) => r.reference || '' }
         ],
         cursor
       );
@@ -570,20 +593,11 @@ exports.listPayments = async (req, res, next) => {
 
     const { page, limit, skip } = pageOf(req.query);
     const [rows, total, sums] = await Promise.all([
-      paymentPopulate(PlotPayment.find(filter)).sort({ [dateField]: -1, seq: 1 }).skip(skip).limit(limit).lean(),
-      PlotPayment.countDocuments(filter),
-      PlotPayment.aggregate([
-        { $match: filter },
-        { $group: { _id: null, paid: { $sum: '$paidAmount' }, due: { $sum: '$dueAmount' } } }
-      ])
+      salePopulate(PlotReceipt.find(filter)).sort({ paidOn: -1, createdAt: -1 }).skip(skip).limit(limit).lean(),
+      PlotReceipt.countDocuments(filter),
+      PlotReceipt.aggregate([{ $match: filter }, { $group: { _id: null, paid: { $sum: '$amount' } } }])
     ]);
-    return listResponse(res, {
-      rows,
-      total,
-      page,
-      limit,
-      extra: { summary: { paid: round2(sums[0]?.paid || 0), due: round2(sums[0]?.due || 0) } }
-    });
+    return listResponse(res, { rows, total, page, limit, extra: { summary: { paid: round2(sums[0]?.paid || 0) } } });
   } catch (error) {
     next(error);
   }
@@ -599,7 +613,7 @@ exports.listDues = async (req, res, next) => {
     if (Number.isNaN(asOf.getTime())) throw httpError('Invalid date.');
     asOf.setHours(23, 59, 59, 999);
 
-    const filter = { status: INSTALMENT_STATUSES.DUE, dueDate: { $lte: asOf } };
+    const filter = { status: { $in: OPEN_INSTALMENT_STATUSES }, dueDate: { $lte: asOf } };
     if (req.query.project) {
       assertId(req.query.project, 'project');
       filter.project = oid(req.query.project);
@@ -608,15 +622,15 @@ exports.listDues = async (req, res, next) => {
 
     const { page, limit, skip } = pageOf(req.query);
     const [rows, total, sums] = await Promise.all([
-      paymentPopulate(PlotPayment.find(filter)).sort({ dueDate: 1 }).skip(skip).limit(limit).lean(),
+      salePopulate(PlotPayment.find(filter)).sort({ dueDate: 1 }).skip(skip).limit(limit).lean(),
       PlotPayment.countDocuments(filter),
       PlotPayment.aggregate([
         { $match: filter },
         {
           $group: {
             _id: null,
-            due: { $sum: '$dueAmount' },
-            overdue: { $sum: { $cond: [{ $lt: ['$dueDate', startOfDay()] }, '$dueAmount', 0] } },
+            due: { $sum: { $subtract: ['$dueAmount', '$paidAmount'] } },
+            overdue: { $sum: { $cond: [{ $lt: ['$dueDate', startOfDay()] }, { $subtract: ['$dueAmount', '$paidAmount'] }, 0] } },
             overdueCount: { $sum: { $cond: [{ $lt: ['$dueDate', startOfDay()] }, 1, 0] } }
           }
         }
@@ -641,26 +655,65 @@ exports.listDues = async (req, res, next) => {
   }
 };
 
-// One paid instalment, with everything its printed receipt shows.
+// One receipt, with everything its printed copy shows.
 exports.getReceipt = async (req, res, next) => {
   try {
-    assertId(req.params.id, 'payment');
-    const payment = await PlotPayment.findById(req.params.id)
-      .populate({ path: 'booking', select: 'code plan price paidTotal tenureMonths bookedOn status' })
+    assertId(req.params.id, 'receipt');
+    const receipt = await PlotReceipt.findById(req.params.id)
+      .populate({ path: 'booking', select: 'code plan price paidTotal tenureMonths emiAmount bookedOn status' })
       .populate({ path: 'plot', select: 'code name size facing block', populate: { path: 'block', select: 'name' } })
       .populate({ path: 'project', select: 'code name location company', populate: { path: 'company' } })
       .populate('client')
       .populate('associate', 'memberCode fullName')
       .lean();
-    if (!payment) throw httpError('Payment not found.', 404);
-    if (payment.status !== INSTALMENT_STATUSES.PAID) throw httpError('This instalment has not been paid yet.', 409);
-    const totalInstalments = await PlotPayment.countDocuments({ booking: payment.booking._id });
+    if (!receipt) throw httpError('Receipt not found.', 404);
+    res.status(200).json({ success: true, data: { ...receipt, balance: receipt.balanceAfter } });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Everything the printed booking statement shows: the sale, the live
+ * schedule (replaced rows left out), every receipt, and a summary.
+ */
+exports.getStatement = async (req, res, next) => {
+  try {
+    assertId(req.params.id, 'booking');
+    const booking = await Booking.findById(req.params.id)
+      .populate({ path: 'plot', populate: { path: 'block', select: 'code name' } })
+      .populate({ path: 'project', select: 'code name location company', populate: { path: 'company' } })
+      .populate('client')
+      .populate('associate', 'memberCode fullName phone email')
+      .lean();
+    if (!booking) throw httpError('Booking not found.', 404);
+
+    const [rows, receipts] = await Promise.all([
+      PlotPayment.find({ booking: booking._id, status: { $ne: INSTALMENT_STATUSES.SUPERSEDED } }).sort({ seq: 1 }).lean(),
+      PlotReceipt.find({ booking: booking._id }).sort({ paidOn: 1, createdAt: 1 }).lean()
+    ]);
+    const today = startOfDay();
+    const schedule = rows.map((p) => withDueState(p, today));
+    const open = schedule.filter((p) => OPEN_INSTALMENT_STATUSES.includes(p.status));
+    const overdue = open.filter((p) => p.overdue);
+
     res.status(200).json({
       success: true,
       data: {
-        ...payment,
-        totalInstalments,
-        balance: round2(payment.booking.price - payment.booking.paidTotal)
+        ...booking,
+        schedule,
+        receipts,
+        summary: {
+          price: booking.price,
+          paid: booking.paidTotal,
+          balance: booking.status === BOOKING_STATUSES.CANCELLED ? 0 : round2(booking.price - booking.paidTotal),
+          emiAmount: booking.emiAmount,
+          remainingEmis: open.filter((p) => p.kind === INSTALMENT_KINDS.EMI).length,
+          nextDue: open[0] ? { dueDate: open[0].dueDate, amount: open[0].remaining } : null,
+          overdue: round2(overdue.reduce((s, p) => s + p.remaining, 0)),
+          overdueCount: overdue.length
+        },
+        generatedAt: new Date()
       }
     });
   } catch (error) {

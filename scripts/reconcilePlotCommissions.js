@@ -1,5 +1,5 @@
 /**
- * Re-runs plot commission for every paid instalment, and the reversal for
+ * Re-runs plot commission for every receipt, and the reversal for
  * every cancelled booking, in T2.
  *
  *   npm run reconcile:plots
@@ -14,10 +14,10 @@ require('dotenv').config();
 const mongoose = require('mongoose');
 const { BUSINESSES } = require('../config/business');
 const { runInBusiness } = require('../utils/businessContext');
-const PlotPayment = require('../models/plots/Payment');
+const PlotReceipt = require('../models/plots/Receipt');
 const PlotBooking = require('../models/plots/Booking');
 const PlotCommission = require('../models/plots/Commission');
-const { INSTALMENT_STATUSES, BOOKING_STATUSES } = require('../config/plotConfig');
+const { BOOKING_STATUSES } = require('../config/plotConfig');
 const { onPaymentReceived, reverseBooking } = require('../services/plots/commissionService');
 
 const run = async () => {
@@ -25,16 +25,16 @@ const run = async () => {
   console.log('Connected to MongoDB — reconciling T2 plot commission\n');
 
   await runInBusiness(BUSINESSES.T2, async () => {
-    // Paid instalments whose volume was never posted.
+    // Receipts whose volume was never posted.
     const posted = new Set(
       (await PlotCommission.find({ idempotencyKey: /^plot:volume:/ }).select('payment').lean()).map((r) => String(r.payment))
     );
-    const paid = await PlotPayment.find({ status: INSTALMENT_STATUSES.PAID }).select('_id receiptNo').sort({ paidOn: 1 }).lean();
-    const missing = paid.filter((p) => !posted.has(String(p._id)));
-    console.log(`Paid instalments: ${paid.length}, without commission: ${missing.length}`);
-    for (const p of missing) {
-      const result = await onPaymentReceived(p._id);
-      console.log(`  ${p.receiptNo}: ${result.skipped ? `skipped (${result.skipped})` : 'settled'}`);
+    const receipts = await PlotReceipt.find().select('_id receiptNo').sort({ paidOn: 1 }).lean();
+    const missing = receipts.filter((r) => !posted.has(String(r._id)));
+    console.log(`Receipts: ${receipts.length}, without commission: ${missing.length}`);
+    for (const r of missing) {
+      const result = await onPaymentReceived(r._id);
+      console.log(`  ${r.receiptNo}: ${result.skipped ? `skipped (${result.skipped})` : 'settled'}`);
     }
 
     // Cancelled bookings whose reversal never completed.

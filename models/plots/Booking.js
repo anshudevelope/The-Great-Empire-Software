@@ -27,8 +27,10 @@ const bookingSchema = new mongoose.Schema(
     plan: { type: String, enum: Object.values(PAYMENT_PLANS), required: true },
     price: { type: Number, required: true, min: 0 },
     downPayment: { type: Number, default: 0, min: 0 },
+    // The live schedule: updated when a prepayment reshapes it.
     tenureMonths: { type: Number, default: 0, min: 0 },
     emiAmount: { type: Number, default: 0, min: 0 },
+    revision: { type: Number, default: 0, min: 0 },
     bookedOn: { type: Date, required: true },
 
     status: { type: String, enum: Object.values(BOOKING_STATUSES), default: BOOKING_STATUSES.ACTIVE, index: true },

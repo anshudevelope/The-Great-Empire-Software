@@ -62,7 +62,23 @@ const BOOKING_STATUSES = { ACTIVE: 'active', COMPLETED: 'completed', CANCELLED: 
 
 const INSTALMENT_KINDS = { FULL: 'full', DOWN: 'down', EMI: 'emi' };
 
-const INSTALMENT_STATUSES = { DUE: 'due', PAID: 'paid', CANCELLED: 'cancelled' };
+const INSTALMENT_STATUSES = {
+  DUE: 'due',
+  PARTIAL: 'partial',
+  PAID: 'paid',
+  // Replaced when a prepayment reshaped the schedule; kept for history.
+  SUPERSEDED: 'superseded',
+  CANCELLED: 'cancelled'
+};
+
+// Instalments that still owe money.
+const OPEN_INSTALMENT_STATUSES = [INSTALMENT_STATUSES.DUE, INSTALMENT_STATUSES.PARTIAL];
+
+// What the admin does with money beyond what is due now, chosen per payment.
+const PAYMENT_ADJUSTMENTS = { REDUCE_EMI: 'reduce_emi', REDUCE_TENURE: 'reduce_tenure', PAY_AHEAD: 'pay_ahead' };
+
+// Receipt allocation kind for a principal prepayment that reshaped the schedule.
+const PREPAYMENT = 'prepayment';
 
 // Most plots a single block create / "add plots" call may generate.
 const MAX_PLOTS_PER_CALL = 1000;
@@ -75,6 +91,7 @@ const publicPlotConfig = () => ({
   payout: { adminChargePct: PLOT_PAYOUT.adminChargePct, tdsPct: PLOT_PAYOUT.tdsPct },
   rating: PLOT_RATING,
   payment: PLOT_PAYMENT,
+  adjustments: Object.values(PAYMENT_ADJUSTMENTS),
   facings: PLOT_FACINGS,
   rateUnits: Object.values(RATE_UNITS),
   projectStatuses: Object.values(PROJECT_STATUSES),
@@ -97,6 +114,9 @@ module.exports = {
   BOOKING_STATUSES,
   INSTALMENT_KINDS,
   INSTALMENT_STATUSES,
+  OPEN_INSTALMENT_STATUSES,
+  PAYMENT_ADJUSTMENTS,
+  PREPAYMENT,
   MAX_PLOTS_PER_CALL,
   publicPlotConfig
 };

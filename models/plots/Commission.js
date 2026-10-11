@@ -19,12 +19,12 @@ const plotCommissionSchema = new mongoose.Schema(
     type: { type: String, enum: Object.values(COMMISSION_TYPES), required: true },
     amount: { type: Number, required: true }, // negative on reversals
 
-    // What produced it: the associate the sale is credited to, and the payment.
+    // What produced it: the associate the sale is credited to, and the receipt.
     sourceAssociate: { type: mongoose.Schema.Types.ObjectId, ref: 'Associate', required: true },
     sourceAssociateCode: { type: String, required: true },
     booking: { type: mongoose.Schema.Types.ObjectId, ref: 'PlotBooking', required: true, index: true },
     bookingCode: { type: String, required: true },
-    payment: { type: mongoose.Schema.Types.ObjectId, ref: 'PlotPayment', default: null },
+    payment: { type: mongoose.Schema.Types.ObjectId, ref: 'PlotReceipt', default: null },
 
     basis: {
       rate: { type: Number, required: true },

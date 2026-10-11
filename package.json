@@ -10,6 +10,7 @@
     "start": "node server.js",
     "seed:admin": "node scripts/seedAdmin.js",
     "migrate": "node scripts/migrate.js",
+    "migrate:plot-receipts": "node scripts/migratePlotReceipts.js",
     "verify:tree": "node scripts/verifyTree.js",
     "verify:commissions": "node scripts/verifyCommissions.js",
     "backfill:commissions": "node scripts/backfillCommissions.js",
@@ -18,9 +19,11 @@
     "seed:test": "node scripts/dev-seed/seedTestAssociates.js",
     "seed:demo": "node scripts/dev-seed/seedDemoData.js",
     "seed:periods": "node scripts/dev-seed/seedPayoutPeriods.js",
+    "seed:plots": "node scripts/dev-seed/seedPlotDemo.js",
     "sync:indexes": "node scripts/syncIndexes.js",
     "recode": "node scripts/recodeMembers.js",
-    "reconcile:plots": "node scripts/reconcilePlotCommissions.js"
+    "reconcile:plots": "node scripts/reconcilePlotCommissions.js",
+    "verify:plots": "node scripts/verifyPlotSchedules.js"
   },
   "keywords": [],
   "author": "",

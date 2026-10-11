@@ -1,10 +1,10 @@
 const Associate = require('../../models/Associate');
 const PlotCommission = require('../../models/plots/Commission');
 const PlotNetwork = require('../../models/plots/Network');
-const PlotPayment = require('../../models/plots/Payment');
+const PlotReceipt = require('../../models/plots/Receipt');
 const PlotBooking = require('../../models/plots/Booking');
 const { COMMISSION_TYPES, POSITIONS } = require('../../config/constants');
-const { PLOT_COMMISSION, PLOT_SELF_LEG, INSTALMENT_STATUSES, BOOKING_STATUSES } = require('../../config/plotConfig');
+const { PLOT_COMMISSION, PLOT_SELF_LEG, BOOKING_STATUSES } = require('../../config/plotConfig');
 // Read-only helpers from the registration engine: walking the tree is the same
 // for both. Nothing here writes to a registration model or ledger.
 const { loadAncestorChain, resolveLegSides } = require('../commissionService');
@@ -14,7 +14,7 @@ const { round2 } = require('./helpers');
 // Plot commission — its own ledger (PlotCommission) and its own carry pool
 // (PlotNetwork), entirely separate from registration.
 //
-// Runs AFTER a payment's transaction commits, never inside it, for the same
+// Runs AFTER a receipt's transaction commits, never inside it, for the same
 // reasons as registration (see services/commissionService.js): a duplicate key
 // is the "already paid" signal and must not abort a transaction. Every write
 // is a single-document atomic operation, and every row has an idempotency key,
@@ -98,7 +98,7 @@ const legChain = async (seller, leg) => {
 
 const payMatching = async (payment, booking, seller, chainOverride = null) => {
   const commissionVolume = payment.commissionBase;
-  const businessVolume = payment.paidAmount;
+  const businessVolume = payment.amount;
   if (!(commissionVolume > 0) && !(businessVolume > 0)) return [];
 
   const chain = chainOverride ?? (await legChain(seller, booking.leg));
@@ -165,15 +165,15 @@ const payMatching = async (payment, booking, seller, chainOverride = null) => {
 };
 
 /**
- * Entry point after a payment is received. Idempotent.
+ * Entry point after a receipt is recorded. Idempotent.
  *
- * The volume is posted to the upline only once per payment: a replay finds the
+ * The volume is posted to the upline only once per receipt: a replay finds the
  * direct row already present and stops before touching carry again, which
  * would otherwise double the volume.
  */
-const onPaymentReceived = async (paymentId) => {
-  const payment = await PlotPayment.findById(paymentId).lean();
-  if (!payment || payment.status !== INSTALMENT_STATUSES.PAID) return { skipped: 'not paid' };
+const onPaymentReceived = async (receiptId) => {
+  const payment = await PlotReceipt.findById(receiptId).lean();
+  if (!payment) return { skipped: 'receipt not found' };
 
   const booking = await PlotBooking.findById(payment.booking).select('_id code associate status leg').lean();
   if (!booking) return { skipped: 'booking not found' };
@@ -218,9 +218,9 @@ const onPaymentReceived = async (paymentId) => {
  * their matching on it) is added here. Guarded by a per-payment marker, so a
  * second run changes nothing.
  */
-const postOwnLegForPayment = async (paymentId) => {
-  const payment = await PlotPayment.findById(paymentId).lean();
-  if (!payment || payment.status !== INSTALMENT_STATUSES.PAID) return { skipped: 'not paid' };
+const postOwnLegForPayment = async (receiptId) => {
+  const payment = await PlotReceipt.findById(receiptId).lean();
+  if (!payment) return { skipped: 'receipt not found' };
 
   const booking = await PlotBooking.findById(payment.booking).select('_id code associate status leg').lean();
   if (!booking || booking.status === BOOKING_STATUSES.CANCELLED) return { skipped: 'booking not live' };
@@ -255,12 +255,12 @@ const postOwnLegForPayment = async (paymentId) => {
   return { matching };
 };
 
-/** onPaymentReceived that never throws — the payment has already committed. */
+/** onPaymentReceived that never throws — the receipt has already committed. */
 const settlePayment = async (paymentId) => {
   try {
     return await onPaymentReceived(paymentId);
   } catch (err) {
-    console.error(`[plot-commission] payment ${paymentId} failed; reconcile:plots will retry.`, err.message);
+    console.error(`[plot-commission] receipt ${paymentId} failed; reconcile:plots will retry.`, err.message);
     return { error: err.message };
   }
 };
@@ -337,11 +337,18 @@ const reverseBooking = async (bookingId, reason = 'Booking cancelled') => {
     const posted = await PlotCommission.find({ booking: booking._id, idempotencyKey: /^plot:volume:/ })
       .select('payment')
       .lean();
-    const payments = await PlotPayment.find({ _id: { $in: posted.map((p) => p.payment) } })
-      .select('paidAmount commissionBase')
+    const receipts = await PlotReceipt.find({ _id: { $in: posted.map((p) => p.payment) } })
+      .select('amount commissionBase')
       .lean();
-    const rated = round2(payments.reduce((s, p) => s + (p.commissionBase || 0), 0));
-    const whole = round2(payments.reduce((s, p) => s + (p.paidAmount || 0), 0));
+    // Volume was posted for a payment with no receipt — paid instalments not
+    // migrated yet (npm run migrate:plot-receipts). Release the claim and stop
+    // rather than mark a reversal done that took nothing out.
+    if (receipts.length !== posted.length) {
+      await PlotCommission.deleteOne({ _id: marker._id });
+      throw new Error(`${booking.code}: ${posted.length - receipts.length} posted payment(s) have no receipt — run migrate:plot-receipts, then reconcile:plots.`);
+    }
+    const rated = round2(receipts.reduce((s, r) => s + (r.commissionBase || 0), 0));
+    const whole = round2(receipts.reduce((s, r) => s + (r.amount || 0), 0));
 
     try {
       const seller = await loadSeller(booking.associate);
