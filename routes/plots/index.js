@@ -60,6 +60,7 @@ salesRouter.post('/bookings/:id/cancel', sales.cancelBooking);
 
 salesRouter.get('/payments', sales.listPayments);
 salesRouter.get('/payments/dues', sales.listDues);
+salesRouter.get('/payments/emis', sales.listEmis);
 salesRouter.get('/payments/:id/receipt', sales.getReceipt);
 
 // --- Plot commission & payouts -----------------------------------------------

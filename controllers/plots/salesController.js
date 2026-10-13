@@ -655,6 +655,140 @@ exports.listDues = async (req, res, next) => {
   }
 };
 
+const EMI_VIEWS = ['pending', 'overdue', 'upcoming', 'paid', 'all'];
+const ONE_DAY = 86400000;
+
+/**
+ * Plot Sales → EMIs: every EMI instalment, sliced by where it stands today.
+ *
+ *   pending  — unpaid or part-paid, due today or earlier (overdue included)
+ *   overdue  — pending, due before today
+ *   upcoming — unpaid, due after today (optionally only the next `within` days)
+ *   paid     — settled
+ *
+ * The tab counts and totals come from one aggregate over the same base filter,
+ * so they always agree with what each tab lists. Superseded and cancelled rows
+ * are never EMIs anyone owes, so they are excluded outright.
+ */
+exports.listEmis = async (req, res, next) => {
+  try {
+    const view = EMI_VIEWS.includes(req.query.view) ? req.query.view : 'pending';
+    const today = startOfDay();
+    const endToday = endOfToday();
+    const within = Math.min(Math.max(parseInt(req.query.within, 10) || 0, 0), 3650);
+    const windowEnd = within ? new Date(endToday.getTime() + within * ONE_DAY) : null;
+
+    const base = {
+      kind: INSTALMENT_KINDS.EMI,
+      status: { $in: [...OPEN_INSTALMENT_STATUSES, INSTALMENT_STATUSES.PAID] }
+    };
+    if (req.query.project) {
+      assertId(req.query.project, 'project');
+      base.project = oid(req.query.project);
+    }
+    if (req.query.from || req.query.to) {
+      base.dueDate = {};
+      if (req.query.from) base.dueDate.$gte = new Date(req.query.from);
+      if (req.query.to) {
+        const to = new Date(req.query.to);
+        to.setHours(23, 59, 59, 999);
+        base.dueDate.$lte = to;
+      }
+    }
+    const search = str(req.query.search);
+    if (search) {
+      const [clients, bookings] = await Promise.all([
+        Client.find(searchFilter(search, ['fullName', 'mobile', 'code'])).select('_id').limit(200).lean(),
+        Booking.find(searchFilter(search, ['code'])).select('_id').limit(200).lean()
+      ]);
+      base.$or = [{ client: { $in: clients.map((c) => c._id) } }, { booking: { $in: bookings.map((b) => b._id) } }];
+    }
+
+    // The same four slices as Mongo filters (for the list). They sit beside
+    // `base` in an $and, so a user-chosen date range narrows them further.
+    const open = { status: { $in: OPEN_INSTALMENT_STATUSES } };
+    const slice = {
+      pending: { ...open, dueDate: { $lte: endToday } },
+      overdue: { ...open, dueDate: { $lt: today } },
+      upcoming: { ...open, dueDate: { $gt: endToday, ...(windowEnd ? { $lte: windowEnd } : {}) } },
+      paid: { status: INSTALMENT_STATUSES.PAID },
+      all: {}
+    };
+    const filter = view === 'all' ? base : { $and: [base, slice[view]] };
+
+    // ... and as expressions (for the counts), kept next to each other on purpose.
+    const isOpen = { $in: ['$status', OPEN_INSTALMENT_STATUSES] };
+    const left = { $subtract: ['$dueAmount', '$paidAmount'] };
+    const inPending = { $and: [isOpen, { $lte: ['$dueDate', endToday] }] };
+    const inOverdue = { $and: [isOpen, { $lt: ['$dueDate', today] }] };
+    const inUpcoming = {
+      $and: [isOpen, { $gt: ['$dueDate', endToday] }, ...(windowEnd ? [{ $lte: ['$dueDate', windowEnd] }] : [])]
+    };
+    const inPaid = { $eq: ['$status', INSTALMENT_STATUSES.PAID] };
+    const count = (cond) => ({ $sum: { $cond: [cond, 1, 0] } });
+    const amount = (cond, value) => ({ $sum: { $cond: [cond, value, 0] } });
+
+    const { page, limit, skip } = pageOf(req.query);
+    const sort = view === 'paid' ? { lastPaidOn: -1, dueDate: -1 } : view === 'all' ? { dueDate: 1, seq: 1 } : { dueDate: 1 };
+    const [rows, total, sums] = await Promise.all([
+      PlotPayment.find(filter)
+        .populate('booking', 'code plan status tenureMonths')
+        .populate('plot', 'code name')
+        .populate('project', 'code name')
+        .populate('client', 'code fullName mobile')
+        .populate('associate', 'memberCode fullName')
+        .sort(sort)
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      PlotPayment.countDocuments(filter),
+      PlotPayment.aggregate([
+        { $match: base },
+        {
+          $group: {
+            _id: null,
+            all: { $sum: 1 },
+            pending: count(inPending),
+            overdue: count(inOverdue),
+            upcoming: count(inUpcoming),
+            paid: count(inPaid),
+            pendingAmount: amount(inPending, left),
+            overdueAmount: amount(inOverdue, left),
+            upcomingAmount: amount(inUpcoming, left),
+            paidAmount: amount(inPaid, '$paidAmount')
+          }
+        }
+      ])
+    ]);
+    const s = sums[0] || {};
+    return listResponse(res, {
+      rows: rows.map((p) => withDueState(p, today)),
+      total,
+      page,
+      limit,
+      extra: {
+        summary: {
+          counts: {
+            pending: s.pending || 0,
+            overdue: s.overdue || 0,
+            upcoming: s.upcoming || 0,
+            paid: s.paid || 0,
+            all: s.all || 0
+          },
+          amounts: {
+            pending: round2(s.pendingAmount || 0),
+            overdue: round2(s.overdueAmount || 0),
+            upcoming: round2(s.upcomingAmount || 0),
+            paid: round2(s.paidAmount || 0)
+          }
+        }
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 // One receipt, with everything its printed copy shows.
 exports.getReceipt = async (req, res, next) => {
   try {
