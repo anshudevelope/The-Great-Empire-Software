@@ -76,6 +76,7 @@ commissionRouter.get('/payouts', commission.listPayouts);
 commissionRouter.post('/payouts', commission.generatePayout);
 commissionRouter.get('/payouts/next', commission.getNextPayoutPeriod);
 commissionRouter.get('/payouts/:id', commission.getPayout);
+commissionRouter.get('/payouts/:id/export', commission.exportPayout);
 commissionRouter.post('/payouts/:id/finalize', commission.finalizePayout);
 commissionRouter.post('/payouts/:id/cancel', commission.cancelPayout);
 commissionRouter.delete('/payouts/:id', commission.discardPayout);

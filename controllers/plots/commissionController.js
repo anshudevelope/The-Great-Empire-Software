@@ -6,6 +6,7 @@ const PlotPayout = require('../../models/plots/Payout');
 const PlotBooking = require('../../models/plots/Booking');
 const { BOOKING_STATUSES } = require('../../config/plotConfig');
 const { record } = require('../../services/auditService');
+const { streamCsv } = require('../../utils/csv');
 const { COMMISSION_TYPES } = require('../../config/constants');
 const payoutService = require('../../services/plots/payoutService');
 const { round2, httpError, assertId, pageOf, listResponse, searchFilter, PLOT_ACTIONS } = require('../../services/plots/helpers');
@@ -253,6 +254,33 @@ exports.getPayout = async (req, res, next) => {
     const payout = await PlotPayout.findById(req.params.id).lean();
     if (!payout) throw httpError('Plot payout not found.', 404);
     res.status(200).json({ success: true, data: payout });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// The payout sheet as CSV (opens in Excel) — same layout as the T1 payout sheet.
+exports.exportPayout = async (req, res, next) => {
+  try {
+    assertId(req.params.id, 'payout');
+    const payout = await PlotPayout.findById(req.params.id).lean();
+    if (!payout) throw httpError('Plot payout not found.', 404);
+    // Headers follow the rates frozen onto the payout, not today's config.
+    const pctOf = (rate) => `${round2(rate * 100)}%`;
+    let sno = 0;
+    const columns = [
+      { header: 'Sno.', value: () => ++sno },
+      { header: 'MemberCode', value: (l) => l.memberCode },
+      { header: 'Name', value: (l) => l.fullName },
+      { header: 'Direct', value: (l) => l.direct },
+      { header: 'Matching', value: (l) => l.matching },
+      { header: 'Reversals', value: (l) => l.reversals },
+      { header: 'Total', value: (l) => l.total },
+      { header: `Admin Charge (${pctOf(payout.rates.adminChargePct)})`, value: (l) => l.adminCharge },
+      { header: `TDS (${pctOf(payout.rates.tdsPct)})`, value: (l) => l.tds },
+      { header: 'Net Payable', value: (l) => l.netPayable }
+    ];
+    return streamCsv(res, `${payout.payoutNo}-plot-payout.csv`, columns, payout.lines || []);
   } catch (error) {
     next(error);
   }

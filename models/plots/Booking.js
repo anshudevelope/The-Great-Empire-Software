@@ -6,8 +6,8 @@ const { POSITIONS } = require('../../config/constants');
 
 /**
  * A plot sold to a client, credited to an associate. Its instalments live in
- * PlotPayment. `price` is frozen from the plot at the moment of sale, so a
- * later premium edit can never change what this client owes.
+ * PlotPayment. `price` is frozen from the plot (less any discount) at the
+ * moment of sale, so a later premium edit can never change what this client owes.
  */
 const bookingSchema = new mongoose.Schema(
   {
@@ -25,7 +25,17 @@ const bookingSchema = new mongoose.Schema(
     leg: { type: String, enum: [...Object.values(POSITIONS), null], default: null },
 
     plan: { type: String, enum: Object.values(PAYMENT_PLANS), required: true },
+    // What the client pays: the plot's list price less any discount given at
+    // sale. Instalments, receipts and so commission all work off this.
     price: { type: Number, required: true, min: 0 },
+    // The plot's price when sold, and the discount off it. null on bookings
+    // made before discounts existed (their price IS the list price).
+    listPrice: { type: Number, default: null, min: 0 },
+    discount: { type: Number, default: 0, min: 0 },
+    // The project's Allotment % at sale: commission on this booking's payments
+    // is held until paidTotal reaches this share of `price`. null on older
+    // bookings → the project's current value is used.
+    allotmentPct: { type: Number, default: null, min: 0, max: 100 },
     downPayment: { type: Number, default: 0, min: 0 },
     // The live schedule: updated when a prepayment reshapes it.
     tenureMonths: { type: Number, default: 0, min: 0 },

@@ -24,7 +24,7 @@ const {
 } = require('../../config/plotConfig');
 const { buildSchedule, validatePlan } = require('../../services/plots/scheduleService');
 const receiptService = require('../../services/plots/receiptService');
-const { settlePayment, reverseBooking } = require('../../services/plots/commissionService');
+const { settlePayment, reverseBooking, allotmentOf } = require('../../services/plots/commissionService');
 const {
   round2,
   httpError,
@@ -163,6 +163,15 @@ const bookedOnOf = (value) => {
   return d;
 };
 
+// The discount off the plot's list price, and what the client then pays.
+const salePrice = (listPrice, value) => {
+  const discount = round2(numberOr(value, 0));
+  if (Number.isNaN(discount)) throw httpError('Discount must be a number.');
+  if (discount < 0) throw httpError('Discount cannot be negative.');
+  if (discount >= listPrice) throw httpError('Discount must be less than the plot price.');
+  return { listPrice, discount, price: round2(listPrice - discount) };
+};
+
 const ratingOf = (value) => {
   if (!PLOT_RATING.enabled) return 100;
   const n = numberOr(value, PLOT_RATING.defaultPct);
@@ -173,17 +182,18 @@ const ratingOf = (value) => {
 // What the Sell form shows before submitting. Same maths the sale will use.
 exports.previewSchedule = async (req, res, next) => {
   try {
-    let price = numberOr(req.query.price, NaN);
+    let listPrice = numberOr(req.query.price, NaN);
     if (req.query.plot) {
       assertId(req.query.plot, 'plot');
       const plot = await Plot.findById(req.query.plot).select('totalPrice').lean();
       if (!plot) throw httpError('Plot not found.', 404);
-      price = plot.totalPrice;
+      listPrice = plot.totalPrice;
     }
-    if (!(price >= 0)) throw httpError('Plot price is required.');
-    const plan = planInput(req.query, price);
-    const schedule = buildSchedule({ ...plan, price, bookedOn: bookedOnOf(req.query.bookedOn) });
-    res.status(200).json({ success: true, data: { price, ...plan, ...schedule } });
+    if (!(listPrice >= 0)) throw httpError('Plot price is required.');
+    const sale = salePrice(listPrice, req.query.discount);
+    const plan = planInput(req.query, sale.price);
+    const schedule = buildSchedule({ ...plan, price: sale.price, bookedOn: bookedOnOf(req.query.bookedOn) });
+    res.status(200).json({ success: true, data: { ...sale, ...plan, ...schedule } });
   } catch (error) {
     next(error);
   }
@@ -202,7 +212,7 @@ exports.createBooking = async (req, res, next) => {
     assertId(associateId, 'associate');
 
     const [plot, client, associate] = await Promise.all([
-      Plot.findById(plotId).lean(),
+      Plot.findById(plotId).populate('project', 'allotmentPct').lean(),
       Client.findById(clientId).lean(),
       Associate.findById(associateId).select('memberCode fullName role status treeStatus').lean()
     ]);
@@ -221,7 +231,8 @@ exports.createBooking = async (req, res, next) => {
       if (![POSITIONS.LEFT, POSITIONS.RIGHT].includes(leg)) throw httpError('Leg must be Left or Right.');
     }
 
-    const price = plot.totalPrice;
+    const { listPrice, discount, price } = salePrice(plot.totalPrice, req.body.discount);
+    const allotmentPct = plot.project?.allotmentPct ?? 0;
     const plan = planInput(req.body, price);
     const bookedOn = bookedOnOf(req.body.bookedOn);
     const { rows, emiAmount } = buildSchedule({ ...plan, price, bookedOn });
@@ -249,7 +260,7 @@ exports.createBooking = async (req, res, next) => {
           {
             code: await nextCode('booking', session),
             plot: plot._id,
-            project: plot.project,
+            project: plot.project._id,
             client: client._id,
             associate: associate._id,
             associateCode: associate.memberCode,
@@ -257,6 +268,9 @@ exports.createBooking = async (req, res, next) => {
             ...plan,
             emiAmount,
             price,
+            listPrice,
+            discount,
+            allotmentPct,
             bookedOn,
             notes: str(req.body.notes),
             soldBy: req.user._id
@@ -270,7 +284,7 @@ exports.createBooking = async (req, res, next) => {
         ...r,
         booking: created._id,
         plot: plot._id,
-        project: plot.project,
+        project: plot.project._id,
         client: client._id,
         associate: associate._id
       }));
@@ -306,7 +320,7 @@ exports.createBooking = async (req, res, next) => {
       targetType: 'PlotBooking',
       target: booking._id,
       targetCode: booking.code,
-      after: { plot: plot.code, client: client.code, associate: associate.memberCode, leg, price, plan: plan.plan }
+      after: { plot: plot.code, client: client.code, associate: associate.memberCode, leg, listPrice, discount, price, plan: plan.plan }
     });
 
     res.status(201).json({
@@ -371,9 +385,10 @@ exports.getBooking = async (req, res, next) => {
       .populate('associate', 'memberCode fullName phone email')
       .lean();
     if (!booking) throw httpError('Booking not found.', 404);
-    const [schedule, receipts] = await Promise.all([
+    const [schedule, receipts, allotment] = await Promise.all([
       PlotPayment.find({ booking: booking._id }).sort({ seq: 1, revision: 1 }).lean(),
-      PlotReceipt.find({ booking: booking._id }).sort({ paidOn: 1, createdAt: 1 }).lean()
+      PlotReceipt.find({ booking: booking._id }).sort({ paidOn: 1, createdAt: 1 }).lean(),
+      allotmentOf({ ...booking, project: booking.project?._id })
     ]);
     const today = startOfDay();
     const rows = schedule.map((p) => withDueState(p, today));
@@ -383,6 +398,7 @@ exports.getBooking = async (req, res, next) => {
       success: true,
       data: {
         ...booking,
+        allotment,
         schedule: rows,
         receipts,
         balance: round2(booking.price - booking.paidTotal),

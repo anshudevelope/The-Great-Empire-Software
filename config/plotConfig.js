@@ -5,7 +5,9 @@
 // it used (basis.rate), so changing a value never moves money already earned.
 
 // Commission on plot payments. Paid to the associate a sale is credited to
-// (direct) and up their upline (matching), on every payment as it is received.
+// (direct) and up their upline (matching), on every payment as it is received —
+// once the booking has reached its project's Allotment %. Payments before that
+// are held and released together by the payment that reaches it.
 const PLOT_COMMISSION = { direct: 0.05, matching: 0.05 };
 
 // Placing a sale in the credited associate's OWN left or right leg (chosen per

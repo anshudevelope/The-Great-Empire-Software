@@ -3,6 +3,7 @@ const PlotCommission = require('../../models/plots/Commission');
 const PlotNetwork = require('../../models/plots/Network');
 const PlotReceipt = require('../../models/plots/Receipt');
 const PlotBooking = require('../../models/plots/Booking');
+const PlotProject = require('../../models/plots/Project');
 const { COMMISSION_TYPES, POSITIONS } = require('../../config/constants');
 const { PLOT_COMMISSION, PLOT_SELF_LEG, BOOKING_STATUSES } = require('../../config/plotConfig');
 // Read-only helpers from the registration engine: walking the tree is the same
@@ -165,6 +166,23 @@ const payMatching = async (payment, booking, seller, chainOverride = null) => {
 };
 
 /**
+ * The project's Allotment %: the share of a booking's price the client must
+ * have paid before any of its payments earn commission. Below it, payments
+ * are held (nothing paid, no volume posted); the payment that reaches it
+ * releases them all. Frozen on the booking at sale; older bookings without
+ * it use the project's current value.
+ */
+const allotmentOf = async (booking) => {
+  let pct = booking.allotmentPct;
+  if (pct === null || pct === undefined) {
+    const project = await PlotProject.findById(booking.project).select('allotmentPct').lean();
+    pct = project?.allotmentPct ?? 0;
+  }
+  const amount = round2((booking.price * pct) / 100);
+  return { pct, amount, reached: round2(booking.paidTotal) >= amount };
+};
+
+/**
  * Entry point after a receipt is recorded. Idempotent.
  *
  * The volume is posted to the upline only once per receipt: a replay finds the
@@ -175,10 +193,15 @@ const onPaymentReceived = async (receiptId) => {
   const payment = await PlotReceipt.findById(receiptId).lean();
   if (!payment) return { skipped: 'receipt not found' };
 
-  const booking = await PlotBooking.findById(payment.booking).select('_id code associate status leg').lean();
+  const booking = await PlotBooking.findById(payment.booking)
+    .select('_id code associate status leg project price paidTotal allotmentPct')
+    .lean();
   if (!booking) return { skipped: 'booking not found' };
   // A replay after cancellation must not pay on a sale that no longer exists.
   if (booking.status === BOOKING_STATUSES.CANCELLED) return { skipped: 'booking cancelled' };
+
+  const allotment = await allotmentOf(booking);
+  if (!allotment.reached) return { skipped: `held until ₹${allotment.amount} (allotment ${allotment.pct}%) is paid` };
 
   const seller = await loadSeller(booking.associate);
   if (!seller) return { skipped: 'associate not found' };
@@ -255,10 +278,24 @@ const postOwnLegForPayment = async (receiptId) => {
   return { matching };
 };
 
-/** onPaymentReceived that never throws — the receipt has already committed. */
+/**
+ * onPaymentReceived that never throws — the receipt has already committed.
+ *
+ * Runs every receipt on the booking, oldest first: the payment that reaches
+ * the allotment also releases the ones held before it, in the order they were
+ * paid. Receipts already settled skip at once.
+ */
 const settlePayment = async (paymentId) => {
   try {
-    return await onPaymentReceived(paymentId);
+    const payment = await PlotReceipt.findById(paymentId).select('booking').lean();
+    if (!payment) return { skipped: 'receipt not found' };
+    const receipts = await PlotReceipt.find({ booking: payment.booking }).select('_id').sort({ paidOn: 1, createdAt: 1 }).lean();
+    let result = null;
+    for (const r of receipts) {
+      const outcome = await onPaymentReceived(r._id);
+      if (String(r._id) === String(paymentId)) result = outcome;
+    }
+    return result;
   } catch (err) {
     console.error(`[plot-commission] receipt ${paymentId} failed; reconcile:plots will retry.`, err.message);
     return { error: err.message };
@@ -380,4 +417,4 @@ const reverseBooking = async (bookingId, reason = 'Booking cancelled') => {
   return { reversed };
 };
 
-module.exports = { onPaymentReceived, settlePayment, reverseBooking, postOwnLegForPayment };
+module.exports = { onPaymentReceived, settlePayment, reverseBooking, postOwnLegForPayment, allotmentOf };
