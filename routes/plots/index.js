@@ -1,20 +1,25 @@
 const express = require('express');
 const { plotAdminOnly, requireT2 } = require('../../middlewares/plotGuard');
-const { requireAuth } = require('../../middlewares/authMiddleware');
+const { requireAuth, scopeToDownline } = require('../../middlewares/authMiddleware');
+
+// Member-readable routes: any logged-in T2 user, declared before each router's
+// admin guard. scopeToDownline lets the admin through and an associate only
+// into their own subtree, exactly as the T1 tree.
+const t2Member = [requireAuth, requireT2];
 const property = require('../../controllers/plots/propertyController');
 const sales = require('../../controllers/plots/salesController');
 const commission = require('../../controllers/plots/commissionController');
 
-// T2 property + plot-sales module. Every route is T2-only and, bar the member's
-// own /plot-commission/me/summary, admin-only;
+// T2 property + plot-sales module. Every route is T2-only and, bar the few
+// member-readable ones marked below, admin-only;
 // mounted in server.js under /api/property, /api/plot-sales and
 // /api/plot-commission, apart from T1's routes.
 
 // --- Property management ----------------------------------------------------
 const propertyRouter = express.Router();
+// The public plan settings (commission %s) — the member tree labels its plot rows with them.
+propertyRouter.get('/config', t2Member, property.getConfig);
 propertyRouter.use(plotAdminOnly);
-
-propertyRouter.get('/config', property.getConfig);
 
 propertyRouter.get('/companies', property.listCompanies);
 propertyRouter.post('/companies', property.createCompany);
@@ -67,15 +72,15 @@ salesRouter.get('/payments/:id/receipt', sales.getReceipt);
 
 // --- Plot commission & payouts -----------------------------------------------
 const commissionRouter = express.Router();
-// The one member route: declared before the admin guard below, so any logged-in
-// T2 associate reaches it. Reads the caller's own figures only.
-commissionRouter.get('/me/summary', requireAuth, requireT2, commission.getMySummary);
+// The caller's own figures (Tier II rewards), and one downline member's plot
+// position and plot tree (the member tree's hover card and plot tree view).
+commissionRouter.get('/me/summary', t2Member, commission.getMySummary);
+commissionRouter.get('/summary/:id', t2Member, scopeToDownline('id'), commission.getAssociateSummary);
+commissionRouter.get('/tree/:id', t2Member, scopeToDownline('id'), commission.getPlotTree);
 commissionRouter.use(plotAdminOnly);
 
 commissionRouter.get('/ledger', commission.listLedger);
 commissionRouter.get('/summary', commission.listSummary);
-commissionRouter.get('/summary/:id', commission.getAssociateSummary);
-commissionRouter.get('/tree/:id', commission.getPlotTree);
 
 commissionRouter.get('/payouts', commission.listPayouts);
 commissionRouter.post('/payouts', commission.generatePayout);
