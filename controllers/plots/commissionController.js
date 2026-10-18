@@ -167,6 +167,26 @@ exports.getAssociateSummary = async (req, res, next) => {
   }
 };
 
+// GET /api/plot-commission/me/summary — the caller's own lifetime plot business
+// per leg, for the Tier II reward ladder. Commissionable share only (what
+// matching runs on); never carry, which every match consumes. The id comes
+// from the token, so a member can only ever read their own figures.
+exports.getMySummary = async (req, res, next) => {
+  try {
+    const network = await PlotNetwork.findOne({ associate: req.user._id })
+      .select('totalLeftRatedVolume totalRightRatedVolume')
+      .lean();
+    res.status(200).json({
+      success: true,
+      data: {
+        ratedVolume: { left: round2(network?.totalLeftRatedVolume), right: round2(network?.totalRightRatedVolume) }
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 // One leg of the plot tree: who heads it, and every live sale counted in it.
 const legOf = async (id, childId, side) => {
   const [head, bookings] = await Promise.all([

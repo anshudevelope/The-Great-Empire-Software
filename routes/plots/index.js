@@ -1,10 +1,12 @@
 const express = require('express');
-const { plotAdminOnly } = require('../../middlewares/plotGuard');
+const { plotAdminOnly, requireT2 } = require('../../middlewares/plotGuard');
+const { requireAuth } = require('../../middlewares/authMiddleware');
 const property = require('../../controllers/plots/propertyController');
 const sales = require('../../controllers/plots/salesController');
 const commission = require('../../controllers/plots/commissionController');
 
-// T2 property + plot-sales module. Every route is admin-only and T2-only;
+// T2 property + plot-sales module. Every route is T2-only and, bar the member's
+// own /plot-commission/me/summary, admin-only;
 // mounted in server.js under /api/property, /api/plot-sales and
 // /api/plot-commission, apart from T1's routes.
 
@@ -65,6 +67,9 @@ salesRouter.get('/payments/:id/receipt', sales.getReceipt);
 
 // --- Plot commission & payouts -----------------------------------------------
 const commissionRouter = express.Router();
+// The one member route: declared before the admin guard below, so any logged-in
+// T2 associate reaches it. Reads the caller's own figures only.
+commissionRouter.get('/me/summary', requireAuth, requireT2, commission.getMySummary);
 commissionRouter.use(plotAdminOnly);
 
 commissionRouter.get('/ledger', commission.listLedger);
