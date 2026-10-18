@@ -74,7 +74,9 @@ salesRouter.get('/payments/:id/receipt', sales.getReceipt);
 const commissionRouter = express.Router();
 // The caller's own figures (Tier II rewards), and one downline member's plot
 // position and plot tree (the member tree's hover card and plot tree view).
+commissionRouter.get('/me', t2Member, commission.getMyLedger);
 commissionRouter.get('/me/summary', t2Member, commission.getMySummary);
+commissionRouter.get('/me/payouts', t2Member, commission.getMyPayouts);
 commissionRouter.get('/summary/:id', t2Member, scopeToDownline('id'), commission.getAssociateSummary);
 commissionRouter.get('/tree/:id', t2Member, scopeToDownline('id'), commission.getPlotTree);
 commissionRouter.use(plotAdminOnly);

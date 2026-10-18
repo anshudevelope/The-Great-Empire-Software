@@ -342,6 +342,9 @@ exports.getMyPayouts = async (req, res, next) => {
         periodEnd: b?.periodEnd ?? null,
         paidOn: b?.finalizedAt ?? null,
         secondaryChargeLabel: b?.rates?.secondaryChargeLabel ?? 'TDS',
+        // The charges as frozen on the batch, for the portal's column headings.
+        adminChargePct: b?.rates?.adminChargePct ?? null,
+        secondaryChargePct: b?.rates?.secondaryChargePct ?? null,
         direct: l.direct,
         matching: l.matching,
         reversals: l.reversals,

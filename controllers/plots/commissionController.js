@@ -7,7 +7,7 @@ const PlotBooking = require('../../models/plots/Booking');
 const { BOOKING_STATUSES } = require('../../config/plotConfig');
 const { record } = require('../../services/auditService');
 const { streamCsv } = require('../../utils/csv');
-const { COMMISSION_TYPES } = require('../../config/constants');
+const { COMMISSION_TYPES, PAYOUT_STATUSES } = require('../../config/constants');
 const payoutService = require('../../services/plots/payoutService');
 const { round2, httpError, assertId, pageOf, listResponse, searchFilter, PLOT_ACTIONS } = require('../../services/plots/helpers');
 
@@ -167,21 +167,115 @@ exports.getAssociateSummary = async (req, res, next) => {
   }
 };
 
-// GET /api/plot-commission/me/summary — the caller's own lifetime plot business
-// per leg, for the Tier II reward ladder. Commissionable share only (what
-// matching runs on); never carry, which every match consumes. The id comes
-// from the token, so a member can only ever read their own figures.
+/**
+ * One member's plot income from the ledger, split by type — the same shape as
+ * the registration summary, so My Income can show the two side by side.
+ * `unpaidOnly` is "this period": rows no plot payout has paid yet.
+ */
+const plotTotals = async (beneficiaryId, { unpaidOnly = false } = {}) => {
+  const match = { beneficiary: oid(beneficiaryId), ...moneyRows };
+  if (unpaidOnly) match.payout = null;
+  const rows = await PlotCommission.aggregate([{ $match: match }, { $group: { _id: '$type', total: { $sum: '$amount' } } }]);
+  const byType = Object.fromEntries(rows.map((r) => [r._id, r.total]));
+  const direct = round2(byType[COMMISSION_TYPES.DIRECT] || 0);
+  const matching = round2(byType[COMMISSION_TYPES.MATCHING] || 0);
+  const reversals = round2(byType[COMMISSION_TYPES.REVERSAL] || 0);
+  return { directIncome: direct, matchingIncome: matching, reversals, totalIncome: round2(direct + matching + reversals) };
+};
+
+// GET /api/plot-commission/me/summary — the caller's own plot position. The id
+// comes from the token, so a member can only ever read their own figures.
+//  - ratedVolume: lifetime commissionable business per leg, for the Tier II
+//    reward ladder (never carry, which every match consumes).
+//  - current / lifetime / carry: plot income for My Income.
 exports.getMySummary = async (req, res, next) => {
   try {
-    const network = await PlotNetwork.findOne({ associate: req.user._id })
-      .select('totalLeftRatedVolume totalRightRatedVolume')
-      .lean();
+    const [network, current, lifetime] = await Promise.all([
+      PlotNetwork.findOne({ associate: req.user._id })
+        .select('carryLeft carryRight totalLeftRatedVolume totalRightRatedVolume')
+        .lean(),
+      plotTotals(req.user._id, { unpaidOnly: true }),
+      plotTotals(req.user._id)
+    ]);
+    const left = round2(network?.carryLeft);
+    const right = round2(network?.carryRight);
     res.status(200).json({
       success: true,
       data: {
-        ratedVolume: { left: round2(network?.totalLeftRatedVolume), right: round2(network?.totalRightRatedVolume) }
+        ratedVolume: { left: round2(network?.totalLeftRatedVolume), right: round2(network?.totalRightRatedVolume) },
+        current,
+        lifetime,
+        carry: { left, right, weakerLeg: left === right ? null : left < right ? 'Left' : 'Right' }
       }
     });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// GET /api/plot-commission/me/payouts — the caller's own line on every
+// finalized plot payout, newest first. Shaped like the registration
+// /payouts/me rows so the portal draws both with one card. Drafts and
+// cancelled payouts are left out: neither means money was paid.
+exports.getMyPayouts = async (req, res, next) => {
+  try {
+    const me = String(req.user._id);
+    const payouts = await PlotPayout.find({ status: PAYOUT_STATUSES.FINALIZED, 'lines.member': oid(me) })
+      .select('payoutNo periodStart periodEnd finalizedAt rates lines')
+      .sort({ periodEnd: -1 })
+      .lean();
+
+    const data = payouts.flatMap((p) => {
+      const l = p.lines.find((line) => String(line.member) === me);
+      if (!l) return [];
+      return [
+        {
+          batchNo: p.payoutNo,
+          periodStart: p.periodStart,
+          periodEnd: p.periodEnd,
+          paidOn: p.finalizedAt,
+          secondaryChargeLabel: 'TDS',
+          adminChargePct: p.rates?.adminChargePct ?? null,
+          secondaryChargePct: p.rates?.tdsPct ?? null,
+          direct: l.direct,
+          matching: l.matching,
+          reversals: l.reversals,
+          openingAdjustment: 0,
+          total: l.total,
+          adminCharge: l.adminCharge,
+          secondaryCharge: l.tds,
+          netPayable: l.netPayable,
+          heldReason: null,
+          carryFlushed: { left: 0, right: 0 }
+        }
+      ];
+    });
+
+    res.status(200).json({ success: true, data, total: round2(data.reduce((sum, d) => sum + d.netPayable, 0)) });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// GET /api/plot-commission/me — the caller's own plot ledger, newest first.
+// `period=current` limits it to unpaid rows, as the registration ledger does.
+exports.getMyLedger = async (req, res, next) => {
+  try {
+    const filter = { beneficiary: oid(req.user._id), ...moneyRows };
+    if (Object.values(COMMISSION_TYPES).includes(req.query.type)) filter.type = req.query.type;
+    if (req.query.period === 'current') filter.payout = null;
+
+    const { page, limit, skip } = pageOf(req.query);
+    const [rows, total] = await Promise.all([
+      PlotCommission.find(filter)
+        .select('type amount sourceAssociateCode bookingCode basis payout note createdAt')
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      PlotCommission.countDocuments(filter)
+    ]);
+    res.status(200).json({ success: true, data: rows, pagination: { page, limit, total, pages: Math.ceil(total / limit) } });
   } catch (error) {
     next(error);
   }
