@@ -75,6 +75,7 @@ const companyRoutes = require('./routes/companyRoutes');
 const commissionRoutes = require('./routes/commissionRoutes');
 const payoutRoutes = require('./routes/payoutRoutes');
 const settingsRoutes = require('./routes/settingsRoutes');
+const rewardRoutes = require('./routes/rewardRoutes');
 
 const { resolveBusiness, forceBusiness } = require('./middlewares/businessMiddleware');
 const { BUSINESSES } = require('./config/business');
@@ -93,6 +94,7 @@ app.use('/api/company', companyRoutes);
 app.use('/api/commissions', commissionRoutes);
 app.use('/api/payouts', payoutRoutes);
 app.use('/api/settings', settingsRoutes);
+app.use('/api/rewards', rewardRoutes);
 
 // T2 property & plot-sales module — its own routers, admin + T2 only.
 const { propertyRouter, salesRouter, commissionRouter } = require('./routes/plots');
