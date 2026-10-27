@@ -83,6 +83,7 @@ const PLOT_ACTIONS = {
   PLOT_UNHELD: 'plot.plot_unheld',
   CLIENT_SAVED: 'plot.client_saved',
   BOOKING_CREATED: 'plot.booking_created',
+  BOOKING_APPROVED: 'plot.booking_approved',
   BOOKING_CANCELLED: 'plot.booking_cancelled',
   PAYMENT_RECEIVED: 'plot.payment_received',
   PAYOUT_GENERATED: 'plot.payout_generated',

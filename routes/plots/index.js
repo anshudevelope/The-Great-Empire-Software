@@ -63,6 +63,7 @@ salesRouter.get('/bookings/:id', sales.getBooking);
 salesRouter.get('/bookings/:id/payment-preview', sales.previewPayment);
 salesRouter.post('/bookings/:id/payments', sales.recordPayment);
 salesRouter.get('/bookings/:id/statement', sales.getStatement);
+salesRouter.post('/bookings/:id/approve', sales.approveBooking);
 salesRouter.post('/bookings/:id/cancel', sales.cancelBooking);
 
 salesRouter.get('/payments', sales.listPayments);

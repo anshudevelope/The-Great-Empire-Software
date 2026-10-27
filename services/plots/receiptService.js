@@ -13,6 +13,7 @@ const openRows = (bookingId, session = null) =>
 const loadActive = async (bookingId, session = null) => {
   const booking = await PlotBooking.findById(bookingId).session(session);
   if (!booking) throw httpError('Booking not found.', 404);
+  if (booking.status === BOOKING_STATUSES.PENDING) throw httpError('This booking is pending — approve it once the cheque clears.', 409);
   if (booking.status !== BOOKING_STATUSES.ACTIVE) throw httpError('This booking is not active.', 409);
   return booking;
 };

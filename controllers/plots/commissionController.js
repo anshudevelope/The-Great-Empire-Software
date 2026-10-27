@@ -119,7 +119,7 @@ const legFilter = async (associateId, childId, side) => {
   const own = { associate: associateId, leg: side };
   const members = childId ? [childId, ...(await Associate.find({ ancestors: childId }).distinct('_id'))] : [];
   return {
-    status: { $ne: BOOKING_STATUSES.CANCELLED },
+    status: { $nin: [BOOKING_STATUSES.CANCELLED, BOOKING_STATUSES.PENDING] },
     $or: members.length ? [own, { associate: { $in: members } }] : [own]
   };
 };

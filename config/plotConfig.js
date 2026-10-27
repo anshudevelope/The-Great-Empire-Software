@@ -60,7 +60,13 @@ const PROJECT_STATUSES = { UPCOMING: 'upcoming', ONGOING: 'ongoing', COMPLETED: 
 
 const PLOT_STATUSES = { AVAILABLE: 'available', HOLD: 'hold', BOOKED: 'booked' };
 
-const BOOKING_STATUSES = { ACTIVE: 'active', COMPLETED: 'completed', CANCELLED: 'cancelled' };
+// PENDING: sold with a first payment that can still bounce (a cheque). The
+// plot is held and the schedule exists, but nothing counts as paid and no
+// commission runs until the admin approves it; cancelling frees the plot.
+const BOOKING_STATUSES = { PENDING: 'pending', ACTIVE: 'active', COMPLETED: 'completed', CANCELLED: 'cancelled' };
+
+// Payment modes that, collected at sale, keep the booking PENDING until approved.
+const PENDING_PAYMENT_MODES = ['Cheque'];
 
 const INSTALMENT_KINDS = { FULL: 'full', DOWN: 'down', EMI: 'emi' };
 
@@ -94,6 +100,7 @@ const publicPlotConfig = () => ({
   rating: PLOT_RATING,
   payment: PLOT_PAYMENT,
   adjustments: Object.values(PAYMENT_ADJUSTMENTS),
+  pendingPaymentModes: PENDING_PAYMENT_MODES,
   facings: PLOT_FACINGS,
   rateUnits: Object.values(RATE_UNITS),
   projectStatuses: Object.values(PROJECT_STATUSES),
@@ -114,6 +121,7 @@ module.exports = {
   PROJECT_STATUSES,
   PLOT_STATUSES,
   BOOKING_STATUSES,
+  PENDING_PAYMENT_MODES,
   INSTALMENT_KINDS,
   INSTALMENT_STATUSES,
   OPEN_INSTALMENT_STATUSES,

@@ -49,6 +49,26 @@ const bookingSchema = new mongoose.Schema(
     notes: { type: String, default: '' },
 
     soldBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Associate', default: null }, // the admin
+    // The first payment of a PENDING booking (a cheque), held here until the
+    // admin approves it; approving records it as the receipt. Kept afterwards
+    // as the record of what was cleared.
+    pendingPayment: {
+      type: new mongoose.Schema(
+        {
+          amount: { type: Number, required: true, min: 0 },
+          paidOn: { type: Date, required: true },
+          mode: { type: String, default: '' },
+          reference: { type: String, default: '' },
+          ratingPct: { type: Number, default: 100, min: 0, max: 100 }
+        },
+        { _id: false }
+      ),
+      default: null
+    },
+    approval: {
+      at: { type: Date, default: null },
+      by: { type: mongoose.Schema.Types.ObjectId, ref: 'Associate', default: null }
+    },
     cancel: {
       at: { type: Date, default: null },
       by: { type: mongoose.Schema.Types.ObjectId, ref: 'Associate', default: null },

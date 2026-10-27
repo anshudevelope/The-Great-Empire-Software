@@ -20,6 +20,7 @@ const {
   PAYMENT_PLANS,
   PLOT_RATING,
   PLOT_SELF_LEG,
+  PENDING_PAYMENT_MODES,
   PREPAYMENT
 } = require('../../config/plotConfig');
 const { buildSchedule, validatePlan } = require('../../services/plots/scheduleService');
@@ -42,6 +43,10 @@ const oid = (v) => new mongoose.Types.ObjectId(String(v));
 
 // Start of today in server time — "due" / "overdue" boundaries.
 const startOfDay = (d = new Date()) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+
+// A pending booking's instalments aren't owed until its cheque is approved, so
+// the dues and EMI lists leave them out.
+const notPending = async () => ({ $nin: await Booking.find({ status: BOOKING_STATUSES.PENDING }).distinct('_id') });
 
 // ===========================================================================
 // Clients
@@ -241,6 +246,11 @@ exports.createBooking = async (req, res, next) => {
     const payNow = req.body.payNow && typeof req.body.payNow === 'object' ? req.body.payNow : null;
     if (payNow && payNow.mode && !PAYMENT_MODES.includes(payNow.mode)) throw httpError('Unknown payment mode.');
     const rating = payNow ? ratingOf(payNow.ratingPct) : null;
+    // A cheque can bounce: the booking waits as PENDING, holding the plot,
+    // and the payment is only received when the admin approves it.
+    const pending = !!payNow && PENDING_PAYMENT_MODES.includes(payNow.mode);
+    const firstPaidOn = payNow?.paidOn ? new Date(payNow.paidOn) : bookedOn;
+    if (payNow && Number.isNaN(firstPaidOn.getTime())) throw httpError('Invalid payment date.');
 
     const { booking, paidId } = await withTransaction(async (session) => {
       // The guarded claim is what stops two admins selling the same plot.
@@ -273,7 +283,19 @@ exports.createBooking = async (req, res, next) => {
             allotmentPct,
             bookedOn,
             notes: str(req.body.notes),
-            soldBy: req.user._id
+            soldBy: req.user._id,
+            ...(pending
+              ? {
+                  status: BOOKING_STATUSES.PENDING,
+                  pendingPayment: {
+                    amount: rows[0].dueAmount,
+                    paidOn: firstPaidOn,
+                    mode: payNow.mode,
+                    reference: str(payNow.reference),
+                    ratingPct: rating
+                  }
+                }
+              : {})
           }
         ],
         { session }
@@ -295,12 +317,12 @@ exports.createBooking = async (req, res, next) => {
       // Collecting the first instalment on the spot is an ordinary payment of
       // its amount. pay_ahead covers a plan with no down payment, where the
       // first EMI falls a month after booking.
-      const receipt = payNow
+      const receipt = payNow && !pending
         ? await receiptService.recordPayment(
             {
               bookingId: created._id,
               amount: docs[0].dueAmount,
-              paidOn: payNow.paidOn ? new Date(payNow.paidOn) : bookedOn,
+              paidOn: firstPaidOn,
               mode: payNow.mode || null,
               reference: str(payNow.reference),
               ratingPct: rating,
@@ -320,12 +342,14 @@ exports.createBooking = async (req, res, next) => {
       targetType: 'PlotBooking',
       target: booking._id,
       targetCode: booking.code,
-      after: { plot: plot.code, client: client.code, associate: associate.memberCode, leg, listPrice, discount, price, plan: plan.plan }
+      after: { plot: plot.code, client: client.code, associate: associate.memberCode, leg, listPrice, discount, price, plan: plan.plan, status: booking.status }
     });
 
     res.status(201).json({
       success: true,
-      message: `Plot ${plot.name} booked for ${client.fullName}.`,
+      message: pending
+        ? `Plot ${plot.name} booked for ${client.fullName} — pending until the cheque clears and you approve it.`
+        : `Plot ${plot.name} booked for ${client.fullName}.`,
       data: { _id: booking._id, code: booking.code, receiptPaymentId: paidId }
     });
   } catch (error) {
@@ -405,6 +429,66 @@ exports.getBooking = async (req, res, next) => {
         dueNow: round2(open.filter((p) => new Date(p.dueDate) <= cutoff).reduce((s, p) => s + p.remaining, 0)),
         nextDue: open[0] || null
       }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Approve a PENDING booking once its cheque has cleared: it becomes active and
+ * the held cheque is received as an ordinary first payment (receipt dated the
+ * cheque date). Commission on it runs after commit, as for any payment.
+ * A bounced cheque is handled by cancelling instead.
+ */
+exports.approveBooking = async (req, res, next) => {
+  try {
+    assertId(req.params.id, 'booking');
+
+    const { booking, receipt } = await withTransaction(async (session) => {
+      const current = await Booking.findById(req.params.id).session(session);
+      if (!current) throw httpError('Booking not found.', 404);
+      if (current.status !== BOOKING_STATUSES.PENDING) throw httpError('Only a pending booking can be approved.', 409);
+
+      current.status = BOOKING_STATUSES.ACTIVE;
+      current.approval = { at: new Date(), by: req.user._id };
+      await current.save({ session });
+
+      const held = current.pendingPayment;
+      const paid = held
+        ? await receiptService.recordPayment(
+            {
+              bookingId: current._id,
+              amount: held.amount,
+              paidOn: held.paidOn,
+              mode: held.mode || null,
+              reference: held.reference,
+              ratingPct: held.ratingPct,
+              adjustment: PAYMENT_ADJUSTMENTS.PAY_AHEAD,
+              actor: req.user
+            },
+            session
+          )
+        : null;
+      return { booking: current, receipt: paid };
+    });
+
+    if (receipt) await settlePayment(receipt._id);
+
+    await record(req, {
+      action: PLOT_ACTIONS.BOOKING_APPROVED,
+      targetType: 'PlotBooking',
+      target: booking._id,
+      targetCode: booking.code,
+      after: { receipt: receipt?.receiptNo ?? null, amount: receipt?.amount ?? 0 }
+    });
+
+    res.status(200).json({
+      success: true,
+      message: receipt
+        ? `Booking ${booking.code} approved — receipt ${receipt.receiptNo}.`
+        : `Booking ${booking.code} approved.`,
+      data: { receiptPaymentId: receipt?._id ?? null }
     });
   } catch (error) {
     next(error);
@@ -629,7 +713,7 @@ exports.listDues = async (req, res, next) => {
     if (Number.isNaN(asOf.getTime())) throw httpError('Invalid date.');
     asOf.setHours(23, 59, 59, 999);
 
-    const filter = { status: { $in: OPEN_INSTALMENT_STATUSES }, dueDate: { $lte: asOf } };
+    const filter = { status: { $in: OPEN_INSTALMENT_STATUSES }, dueDate: { $lte: asOf }, booking: await notPending() };
     if (req.query.project) {
       assertId(req.query.project, 'project');
       filter.project = oid(req.query.project);
@@ -696,7 +780,8 @@ exports.listEmis = async (req, res, next) => {
 
     const base = {
       kind: INSTALMENT_KINDS.EMI,
-      status: { $in: [...OPEN_INSTALMENT_STATUSES, INSTALMENT_STATUSES.PAID] }
+      status: { $in: [...OPEN_INSTALMENT_STATUSES, INSTALMENT_STATUSES.PAID] },
+      booking: await notPending()
     };
     if (req.query.project) {
       assertId(req.query.project, 'project');
